@@ -1,0 +1,185 @@
+[ React Frontend ]
+        ↓  (HTTP Request)
+[ FastAPI Backend ]
+        ↓
+[ Scheduler Engine (Python Core) ]
+        ↓
+[ PDF Generator ]
+        ↓
+[ HTTP Response → PDF File ]
+        ↓
+[ Browser Download ]
+
+
+
+What Frontend Sends:
+POST /api/roster/generate
+
+{
+  "shift": "night",
+  "totalControllers": 16
+}
+
+🟦 LAYER 2 — Backend API (FastAPI)
+
+Backend does 3 things:
+
+Validate request
+
+Call correct scheduler
+
+Return file or JSON
+
+We design TWO endpoints:
+
+1️⃣ Preview Endpoint
+POST /api/roster/preview
+
+Returns JSON schedule (for showing table in frontend)
+
+2️⃣ Generate Endpoint
+POST /api/roster/generate
+
+Returns PDF file
+
+Request Model
+class RosterRequest(BaseModel):
+    shift: str
+    totalControllers: int
+
+That’s the contract between UI and backend.
+
+
+
+
+
+
+Distributed system: UI → API → Engine → Output
+
+We’ll go layer by layer, no jumps.
+
+🧱 SYSTEM OVERVIEW (High Level)
+[ React Frontend ]
+        ↓  (HTTP Request)
+[ FastAPI Backend ]
+        ↓
+[ Scheduler Engine (Python Core) ]
+        ↓
+[ PDF Generator ]
+        ↓
+[ HTTP Response → PDF File ]
+        ↓
+[ Browser Download ]
+
+
+✅ What Frontend Sends
+When user clicks Generate Roster, we send:
+
+POST /api/roster/generate
+
+{
+  "shift": "night",
+  "totalControllers": 16
+}
+That’s it.
+
+Keep payload minimal.
+
+
+
+Request Model
+class RosterRequest(BaseModel):
+    shift: str
+    totalControllers: int
+That’s the contract between UI and backend.
+
+🟦 LAYER 3 — Scheduler Engine (Core Logic)
+This is pure Python.
+No FastAPI here.
+No PDF here.
+
+Only logic.
+
+Structure:
+
+engine/
+    base_scheduler.py
+    day_scheduler.py
+    night_scheduler.py
+What Happens Internally
+Backend receives:
+
+{
+  "shift": "night",
+  "totalControllers": 16
+}
+Then:
+
+if shift == "night":
+    scheduler = NightScheduler(totalControllers)
+else:
+    scheduler = DayScheduler(totalControllers)
+
+schedule = scheduler.generate()
+What does schedule look like?
+
+We define it clearly.
+
+🟦 LAYER 4 — Schedule Data Structure
+
+Engine should return structured JSON like:
+
+{
+  "shift": "night",
+  "slots": [
+    {
+      "position": "TWR-M",
+      "assignments": [
+        {
+          "controller": "C1",
+          "from": "15:00",
+          "to": "16:05"
+        }
+      ]
+    }
+  ]
+}
+
+This structure is used for:
+
+Preview table
+
+PDF rendering
+
+Single source of truth.
+
+🟦 LAYER 5 — PDF Generator
+
+Separate file:
+
+pdf/generator.py
+
+It receives:
+
+schedule
+
+And turns it into formatted PDF.
+
+Engine does not know about PDF.
+PDF does not know about math.
+Separation of concerns.
+
+
+⚙️ Technical Protocol Details
+
+HTTP POST
+
+Content-Type: application/json
+
+Backend parses with Pydantic
+
+Response type:
+
+JSON (preview)
+
+application/pdf (generate)

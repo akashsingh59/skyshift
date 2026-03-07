@@ -1,0 +1,398 @@
+/* --------------------------
+   GLOBAL
+--------------------------- */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: "Inter", "Segoe UI", sans-serif;
+}
+
+body {
+  min-height: 100vh;
+  background: radial-gradient(circle at top left, #1e3a8a, #0f172a);
+  color: #e2e8f0;
+  padding: 30px 15px;
+}
+
+/* --------------------------
+   APP WRAPPER
+--------------------------- */
+
+.app {
+  max-width: 680px;
+  margin: auto;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+body .app {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app h1 {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #16487a;
+  letter-spacing: 0.5px;
+}
+
+/* --------------------------
+   SHIFT STACK
+--------------------------- */
+
+.shift-container {
+  display: flex;
+  flex-direction: column;
+  gap: 15px !important;
+  align-items: center;
+}
+
+/* --------------------------
+   CARD STYLE (GLASS)
+--------------------------- */
+
+.card {
+  width: 130%;
+  max-width: 850px;
+  background: rgba(15, 23, 42, 0.5) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+
+  border-radius: 19px;
+  padding: 6px 8px !important;
+
+  border: 1px solid rgba(51, 65, 85, 0.6) !important;
+
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.45) !important;
+
+  transition: all 0.25s ease;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  background: rgba(15, 23, 42, 0.62) !important;
+}
+
+/* --------------------------
+   SHIFT TITLES
+--------------------------- */
+
+.card h2 {
+  font-size: 15px !important;
+  font-weight: 600;
+  margin-bottom: 4px !important;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Accent colors per shift */
+.card h2::after {
+  content: "";
+  display: block;
+  height: 2px;
+  width: 40px;
+  margin-top: 4px;
+  border-radius: 2px;
+}
+
+.card:nth-child(1) h2::after {
+  background: #3b82f6; /* blue */
+}
+
+.card:nth-child(2) h2::after {
+  background: #22c55e; /* green */
+}
+
+.card:nth-child(3) h2::after {
+  background: #f59e0b; /* amber */
+}
+
+/* --------------------------
+   SUBHEADINGS
+--------------------------- */
+
+.card h3 {
+  font-size: 10px !important;
+  margin-top: 9px !important;
+  margin-bottom: 2px !important;
+  color: #94a3b8 !important;
+  font-weight: 500;
+}
+
+/* --------------------------
+   SELECT INPUTS
+--------------------------- */
+
+select {
+  width: 100%;
+  padding: 3px 6px !important;
+  border-radius: 6px;
+  font-size: 11px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: rgba(15, 23, 42, 0.6) !important;
+  color: #f1f5f9 !important;
+  margin-bottom: 2px !important;
+  transition: 0.2s ease;
+}
+
+select:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.3);
+}
+
+/* --------------------------
+   BUTTON
+--------------------------- */
+
+button {
+  margin-top: 9px !important;
+  width: 100%;
+  padding: 4px !important;
+  border-radius: 8px;
+  border: none;
+  font-size: 11px !important;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+  color: white;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.5);
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+/* --------------------------
+   STATUS + ERROR
+--------------------------- */
+
+.status {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: #38bdf8;
+}
+
+.error {
+  margin-top: 15px;
+  text-align: center;
+  font-size: 13px;
+  color: #f87171;
+}
+
+/* --------------------------
+   MOBILE
+--------------------------- */
+
+@media (max-width: 600px) {
+  .card {
+    padding: 8px 9px !important;
+  }
+
+  .app h1 {
+    font-size: 20px;
+  }
+}
+
+
+
+:root {
+  --bg-gradient: linear-gradient(135deg, #0f172a, #1e3a8a, #0f766e);
+  --card-bg: rgba(255, 255, 255, 0.95);
+  --primary: #1e3a8a;
+  --accent: #0f766e;
+  --highlight: #f59e0b;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --danger: #dc2626;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", "Segoe UI", sans-serif;
+  min-height: 100vh;
+  background: var(--bg-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== Main App ===== */
+
+.app {
+  width: 95%;
+  max-width: 1100px;
+  padding: 0;
+  border-radius: 18px;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+.app h1 {
+  margin: 0 0 16px 0;
+  font-size: 1.5rem;
+  color: var(--primary);
+  text-align: center;
+}
+
+/* ===== Card ===== */
+
+.card {
+  padding: 8px 10px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.52);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.08);
+  margin-bottom: 10px;
+}
+
+.card h2 {
+  margin: 0 0 6px 0;
+  font-size: 0.72rem;
+  color: var(--primary);
+}
+
+.card h3 {
+  margin: 4px 0 3px 0;
+  font-size: 0.62rem;
+  color: var(--muted);
+}
+
+/* ===== Shift Options ===== */
+
+/* ===== Shift Options (Strong Contrast) ===== */
+
+.shift-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.shift-options label {
+  padding: 20px;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  color: white;
+  border: 2px solid transparent;
+}
+
+/* Individual shift colors */
+
+.shift-options label:nth-child(1) {
+  background: linear-gradient(135deg, #1e40af, #2563eb);
+}
+
+.shift-options label:nth-child(2) {
+  background: linear-gradient(135deg, #9333ea, #7c3aed);
+}
+
+.shift-options label:nth-child(3) {
+  background: linear-gradient(135deg, #047857, #059669);
+}
+
+/* Hover effect */
+
+.shift-options label:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 15px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* Selected state */
+
+.shift-options input[type="radio"]:checked + span {
+  text-decoration: underline;
+}
+
+.shift-options input[type="radio"] {
+  accent-color: white;
+}
+/* ===== Controllers Select ===== */
+
+select {
+  padding: 3px 6px;
+  border-radius: 10px;
+  border: 2px solid #e5e7eb;
+  font-size: 0.66rem;
+  width: 100%;
+  background: rgba(15, 23, 42, 0.62);
+  color: #f1f5f9;
+  transition: border 0.2s ease;
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ===== Button ===== */
+
+button {
+  margin-top: 6px;
+  padding: 5px 8px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, #1e3a8a, #0f766e);
+  color: white;
+  transition: all 0.25s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 25px rgba(0, 0, 0, 0.25);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ===== Error ===== */
+
+.error {
+  margin-top: 18px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: #fee2e2;
+  color: var(--danger);
+  font-weight: 600;
+  border: 1px solid #fecaca;
+}
+
+/* ===== Responsive ===== */
+
+@media (max-width: 900px) {
+  .shift-options {
+    grid-template-columns: 1fr;
+  }
+
+  .app {
+    padding: 24px;
+  }
+}
