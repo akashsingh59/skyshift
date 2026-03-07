@@ -10,7 +10,7 @@ export async function generateRoster(payload) {
     throw new Error(errorText || "Failed to generate roster");
   }
 
-  const blob = await res.blob();
+  const blob = await response.blob();
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
