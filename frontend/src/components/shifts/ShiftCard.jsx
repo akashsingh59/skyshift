@@ -9,6 +9,7 @@ export default function ShiftCard({
   controllerLogic,
   showOpenPositions,
   onGenerate,
+  afterControllers = null,
 }) {
   const [openPositions, setOpenPositions] = useState(7);
   const [controllers, setControllers] = useState(12);
@@ -53,6 +54,8 @@ export default function ShiftCard({
         options={controllerOptions}
         onChange={setControllers}
       />
+
+      {afterControllers}
 
       {needsChannel && (
         <ChannelSelect value={channel} onChange={setChannel} />
