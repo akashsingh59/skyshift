@@ -11,7 +11,7 @@ export default function ShiftCard({
   onGenerate,
   afterControllers = null,
 }) {
-  const [openPositions, setOpenPositions] = useState(7);
+  const [openPositions, setOpenPositions] = useState(8);
   const [controllers, setControllers] = useState(12);
   const [channel, setChannel] = useState(null);
 
