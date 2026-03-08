@@ -103,7 +103,15 @@ def _wrap_text(pdf, text, max_width, font_name, font_size):
     return lines
 
 
-def _draw_page_header(pdf, page_w, page_h, start_mins, end_mins):
+def _infer_shift_label(start_mins, end_mins):
+    if start_mins == 120 and end_mins == 510:
+        return "Morning Shift"
+    if start_mins == 510 and end_mins == 900:
+        return "Afternoon Shift"
+    return "Night Shift"
+
+
+def _draw_page_header(pdf, page_w, page_h, start_mins, end_mins, page_num=1):
     paper = HexColor("#F7F3EA")
     ink = HexColor("#141414")
 
@@ -111,14 +119,15 @@ def _draw_page_header(pdf, page_w, page_h, start_mins, end_mins):
     pdf.rect(0, 0, page_w, page_h, fill=1, stroke=0)
 
     pdf.setFillColor(ink)
-    pdf.setFont("Courier-Bold", 21)
-    pdf.drawCentredString(page_w / 2, page_h - 10 * mm, "DUTY ROSTER")
-    pdf.setFont("Courier-Bold", 12)
-    pdf.drawCentredString(
-        page_w / 2,
-        page_h - 16.5 * mm,
-        f"SHIFT WINDOW  {mins_to_hhmm(start_mins)}  TO  {mins_to_hhmm(end_mins)}",
-    )
+    if page_num == 1:
+        pdf.setFont("Courier-Bold", 26)
+        pdf.drawCentredString(page_w / 2, page_h - 10 * mm, "SkyShift")
+        pdf.setFont("Courier-Bold", 13)
+        pdf.drawCentredString(
+            page_w / 2,
+            page_h - 17.2 * mm,
+            _infer_shift_label(start_mins, end_mins),
+        )
     _draw_dashed_rule(pdf, 10 * mm, page_h - 20 * mm, page_w - 10 * mm, page_h - 20 * mm, width=1.6)
 
 
@@ -139,12 +148,13 @@ def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order, shif
         return y_top - 12 * mm
 
     row_h = 13.5 * mm
+    row_gap = 3 * mm
     label_w = 28 * mm
     timeline_w = width - label_w
     first_row_top = y_top - 6 * mm
 
     for row_index, (position, segments) in enumerate(coverage_rows):
-        row_top = first_row_top - (row_index * row_h)
+        row_top = first_row_top - (row_index * (row_h + row_gap))
         row_bottom = row_top - row_h
         row_mid = row_top - (row_h / 2)
 
@@ -182,9 +192,9 @@ def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order, shif
             pdf.drawCentredString(seg_x + seg_w / 2, row_mid - 1.8 * mm, controller)
             seg_x += seg_w
 
-        _draw_dashed_rule(pdf, x, row_bottom, x + width, row_bottom, dash=(4, 2), width=1.1)
+        _draw_dashed_rule(pdf, x, row_bottom - (row_gap / 2), x + width, row_bottom - (row_gap / 2), dash=(4, 2), width=1.1)
 
-    return first_row_top - (len(coverage_rows) * row_h) - 8 * mm
+    return first_row_top - (len(coverage_rows) * (row_h + row_gap)) - 8 * mm
 
 
 def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, page_bottom, page_w, page_h, start_mins, end_mins):
@@ -193,11 +203,11 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
     rows = _build_controller_rows(schedule, slot_order)
 
     section_title_gap = 4 * mm
-    row_h = 7.4 * mm
-    ctrl_w = 22 * mm
-    pos_w = 58 * mm
-    from_w = 26 * mm
-    to_w = 26 * mm
+    row_h = 9.5 * mm
+    ctrl_w = 26 * mm
+    pos_w = 70 * mm
+    from_w = 32 * mm
+    to_w = 32 * mm
     table_w = ctrl_w + pos_w + from_w + to_w
     if table_w > width:
         pos_w -= (table_w - width)
@@ -205,17 +215,17 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
 
     def draw_section_header(section_y):
         pdf.setFillColor(ink)
-        pdf.setFont("Courier-Bold", 14)
+        pdf.setFont("Courier-Bold", 16)
         pdf.drawString(x, section_y, "SECTION B. CONTROLLER ASSIGNMENTS")
         _draw_dashed_rule(pdf, x, section_y - 1.5 * mm, x + table_w, section_y - 1.5 * mm, width=1.2)
 
     def draw_table_header(table_top):
         pdf.setFillColor(ink)
-        pdf.setFont("Courier-Bold", 10.8)
-        pdf.drawString(x + 1.4 * mm, table_top - 5 * mm, "CTRL")
-        pdf.drawString(x + ctrl_w + 1.4 * mm, table_top - 5 * mm, "POSITION")
-        pdf.drawString(x + ctrl_w + pos_w + 1.4 * mm, table_top - 5 * mm, "FROM")
-        pdf.drawString(x + ctrl_w + pos_w + from_w + 1.4 * mm, table_top - 5 * mm, "TO")
+        pdf.setFont("Courier-Bold", 12)
+        pdf.drawString(x + 1.8 * mm, table_top - 6.2 * mm, "CTRL")
+        pdf.drawString(x + ctrl_w + 1.8 * mm, table_top - 6.2 * mm, "POSITION")
+        pdf.drawString(x + ctrl_w + pos_w + 1.8 * mm, table_top - 6.2 * mm, "FROM")
+        pdf.drawString(x + ctrl_w + pos_w + from_w + 1.8 * mm, table_top - 6.2 * mm, "TO")
 
         pdf.setStrokeColor(ink)
         pdf.setLineWidth(1.1)
@@ -235,7 +245,7 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
 
         if y_cursor - group_h < page_bottom:
             pdf.showPage()
-            _draw_page_header(pdf, page_w, page_h, start_mins, end_mins)
+            _draw_page_header(pdf, page_w, page_h, start_mins, end_mins, page_num=2)
             section_y = page_h - 18 * mm
             draw_section_header(section_y)
             y_cursor = draw_table_header(section_y - section_title_gap)
@@ -248,16 +258,16 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
         pdf.line(x + ctrl_w + pos_w + from_w, y_cursor, x + ctrl_w + pos_w + from_w, y_cursor - group_h)
 
         pdf.setFillColor(ink)
-        pdf.setFont("Courier-Bold", 11.5)
-        ctrl_text_y = y_cursor - (group_h / 2) - 1.2 * mm
+        pdf.setFont("Courier-Bold", 13)
+        ctrl_text_y = y_cursor - (group_h / 2) - 1.6 * mm
         pdf.drawCentredString(x + (ctrl_w / 2), ctrl_text_y, controller)
 
         row_cursor = y_cursor
         for index, (position, start_text, end_text) in enumerate(assignments):
-            pdf.setFont("Courier-Bold", 11)
-            pdf.drawString(x + ctrl_w + 1.4 * mm, row_cursor - 5.3 * mm, position)
-            pdf.drawString(x + ctrl_w + pos_w + 1.4 * mm, row_cursor - 5.3 * mm, start_text)
-            pdf.drawString(x + ctrl_w + pos_w + from_w + 1.4 * mm, row_cursor - 5.3 * mm, end_text)
+            pdf.setFont("Courier-Bold", 12)
+            pdf.drawString(x + ctrl_w + 1.8 * mm, row_cursor - 6.2 * mm, position)
+            pdf.drawString(x + ctrl_w + pos_w + 1.8 * mm, row_cursor - 6.2 * mm, start_text)
+            pdf.drawString(x + ctrl_w + pos_w + from_w + 1.8 * mm, row_cursor - 6.2 * mm, end_text)
 
             row_cursor -= row_h
             if index < len(assignments) - 1:
@@ -284,7 +294,7 @@ def _render_schedule_pdf(schedule, slot_order, start_mins, end_mins, position_or
     page_bottom = 10 * mm
     content_w = page_w - 2 * margin_x
 
-    _draw_page_header(pdf, page_w, page_h, start_mins, end_mins)
+    _draw_page_header(pdf, page_w, page_h, start_mins, end_mins, page_num=1)
     next_y = _draw_position_coverage(
         pdf,
         margin_x,
@@ -295,10 +305,12 @@ def _render_schedule_pdf(schedule, slot_order, start_mins, end_mins, position_or
         start_mins,
         end_mins,
     )
+    pdf.showPage()
+    _draw_page_header(pdf, page_w, page_h, start_mins, end_mins, page_num=2)
     _draw_controller_assignments(
         pdf,
         margin_x,
-        next_y,
+        page_h - 18 * mm,
         content_w,
         schedule,
         slot_order,
