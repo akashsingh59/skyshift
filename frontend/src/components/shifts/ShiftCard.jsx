@@ -1,6 +1,5 @@
 import { useState } from "react";
 import ControllerSelect from "./common/ControllerSelect";
-import ChannelSelect from "./common/ChannelSelect";
 
 export default function ShiftCard({
   shiftKey,
@@ -13,9 +12,8 @@ export default function ShiftCard({
 }) {
   const [openPositions, setOpenPositions] = useState(8);
   const [controllers, setControllers] = useState(12);
-  const [channel, setChannel] = useState(null);
-
   const controllerOptions = controllerLogic(openPositions);
+  const defaultContributoryChannel = 1;
 
   const needsChannel =
     (openPositions === 7 && controllers === 13) ||
@@ -28,7 +26,7 @@ export default function ShiftCard({
       endTime,
       openPositions,
       totalControllers: controllers,
-      contributoryChannel: needsChannel ? channel : null,
+      contributoryChannel: needsChannel ? defaultContributoryChannel : null,
     });
   }
 
@@ -56,11 +54,6 @@ export default function ShiftCard({
       />
 
       {afterControllers}
-
-      {needsChannel && (
-        <ChannelSelect value={channel} onChange={setChannel} />
-      )}
-
       <button onClick={handleGenerate}>
         Generate {shiftKey} Roster
       </button>

@@ -27,7 +27,7 @@ def get_positions(p,n):
     "TWR-M",
     "SMC-N",
     "CLD-1",
-    "TWR-M",
+    "TWR-N",
     "SMC-S",
     "TWR-S1",
     "SMC-M",

@@ -1,6 +1,5 @@
 import io
 
-from reportlab.lib import colors
 from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
@@ -19,18 +18,6 @@ DEFAULT_POSITION_ORDER = [
     "TWR-S2",
 ]
 
-POS_COLORS = {
-    "TWR-M": HexColor("#DCEAF7"),
-    "TWR-N": HexColor("#F7E4D2"),
-    "CLD-1": HexColor("#DDEED7"),
-    "SMC-S": HexColor("#F8F0BF"),
-    "SMC-N": HexColor("#F4DDCB"),
-    "TWR-S1": HexColor("#D9EEF2"),
-    "SMC-M": HexColor("#E3E3E3"),
-    "TWR-S2": HexColor("#F8DCDD"),
-}
-
-
 def _position_sort_key(position, position_order):
     try:
         return (0, position_order.index(position))
@@ -48,21 +35,28 @@ def _collect_time_boundaries(schedule):
     return sorted(boundaries)
 
 
-def _build_coverage_rows(schedule, positions, boundaries):
+def _build_coverage_rows(schedule, positions, shift_start, shift_end):
     rows = []
     for position in positions:
-        row = []
-        for start, end in zip(boundaries, boundaries[1:]):
-            assigned = "-"
-            for controller, blocks in schedule.items():
-                for block_position, block_start, block_end in blocks:
-                    if block_position == position and block_start <= start and block_end >= end:
-                        assigned = controller
-                        break
-                if assigned != "-":
-                    break
-            row.append(assigned)
-        rows.append((position, row))
+        segments = []
+        blocks = []
+        for controller, controller_blocks in schedule.items():
+            for block_position, block_start, block_end in controller_blocks:
+                if block_position == position:
+                    blocks.append((block_start, block_end, controller))
+
+        blocks.sort(key=lambda item: item[0])
+        cursor = shift_start
+        for block_start, block_end, controller in blocks:
+            if block_start > cursor:
+                segments.append((cursor, block_start, "-"))
+            segments.append((block_start, block_end, controller))
+            cursor = max(cursor, block_end)
+
+        if cursor < shift_end:
+            segments.append((cursor, shift_end, "-"))
+
+        rows.append((position, segments))
     return rows
 
 
@@ -71,169 +65,214 @@ def _build_controller_rows(schedule, slot_order):
     for controller in slot_order:
         blocks = sorted(schedule.get(controller, []), key=lambda block: block[1])
         if not blocks:
-            rows.append((controller, "No assignment"))
+            rows.append((controller, [("NO ASSIGNMENT", "", "")]))
             continue
-        summary = ", ".join(
-            f"{position} {mins_to_hhmm(start)}-{mins_to_hhmm(end)}"
+        summary = [
+            (position, mins_to_hhmm(start), mins_to_hhmm(end))
             for position, start, end in blocks
-        )
+        ]
         rows.append((controller, summary))
     return rows
 
 
+def _draw_dashed_rule(pdf, x1, y1, x2, y2, dash=(6, 3), width=1):
+    pdf.saveState()
+    pdf.setLineWidth(width)
+    pdf.setDash(*dash)
+    pdf.line(x1, y1, x2, y2)
+    pdf.restoreState()
+
+
+def _wrap_text(pdf, text, max_width, font_name, font_size):
+    if not text:
+        return [""]
+
+    words = text.split()
+    lines = []
+    current = words[0]
+
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if pdf.stringWidth(candidate, font_name, font_size) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+
+    lines.append(current)
+    return lines
+
+
 def _draw_page_header(pdf, page_w, page_h, start_mins, end_mins):
-    paper = HexColor("#F7F1E3")
-    ink = HexColor("#2B2620")
-    line = HexColor("#B7AA92")
+    paper = HexColor("#F7F3EA")
+    ink = HexColor("#141414")
 
     pdf.setFillColor(paper)
     pdf.rect(0, 0, page_w, page_h, fill=1, stroke=0)
 
-    pdf.setStrokeColor(line)
-    pdf.setLineWidth(1)
-    pdf.line(10 * mm, page_h - 18 * mm, page_w - 10 * mm, page_h - 18 * mm)
-
     pdf.setFillColor(ink)
-    pdf.setFont("Times-Bold", 16)
-    pdf.drawCentredString(page_w / 2, page_h - 12 * mm, "DUTY ROSTER")
-    pdf.setFont("Helvetica", 9)
+    pdf.setFont("Courier-Bold", 21)
+    pdf.drawCentredString(page_w / 2, page_h - 10 * mm, "DUTY ROSTER")
+    pdf.setFont("Courier-Bold", 12)
     pdf.drawCentredString(
         page_w / 2,
-        page_h - 16.2 * mm,
-        f"Shift Window  {mins_to_hhmm(start_mins)} - {mins_to_hhmm(end_mins)}",
+        page_h - 16.5 * mm,
+        f"SHIFT WINDOW  {mins_to_hhmm(start_mins)}  TO  {mins_to_hhmm(end_mins)}",
     )
+    _draw_dashed_rule(pdf, 10 * mm, page_h - 20 * mm, page_w - 10 * mm, page_h - 20 * mm, width=1.6)
 
 
-def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order):
-    ink = HexColor("#2B2620")
-    line = HexColor("#B7AA92")
-    label_fill = HexColor("#EEE5D3")
+def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order, shift_start, shift_end):
+    ink = HexColor("#141414")
 
     positions = _collect_positions(schedule, position_order)
-    boundaries = _collect_time_boundaries(schedule)
-    coverage_rows = _build_coverage_rows(schedule, positions, boundaries)
+    coverage_rows = _build_coverage_rows(schedule, positions, shift_start, shift_end)
 
     pdf.setFillColor(ink)
-    pdf.setFont("Times-Bold", 11)
+    pdf.setFont("Courier-Bold", 14)
     pdf.drawString(x, y_top, "SECTION A. POSITION COVERAGE")
+    _draw_dashed_rule(pdf, x, y_top - 1.5 * mm, x + width, y_top - 1.5 * mm, width=1.2)
 
-    if len(boundaries) < 2:
-        pdf.setFont("Helvetica", 9)
+    if not coverage_rows:
+        pdf.setFont("Courier-Bold", 10)
         pdf.drawString(x, y_top - 8 * mm, "No schedule data available.")
         return y_top - 12 * mm
 
-    row_h = 8 * mm
-    label_w = 24 * mm
-    slot_count = len(boundaries) - 1
-    slot_w = (width - label_w) / max(1, slot_count)
-    table_top = y_top - 4 * mm
-    table_h = row_h * (len(coverage_rows) + 1)
+    row_h = 13.5 * mm
+    label_w = 28 * mm
+    timeline_w = width - label_w
+    first_row_top = y_top - 6 * mm
 
-    pdf.setStrokeColor(line)
-    pdf.setLineWidth(0.5)
-    pdf.rect(x, table_top - table_h, width, table_h, fill=0, stroke=1)
+    for row_index, (position, segments) in enumerate(coverage_rows):
+        row_top = first_row_top - (row_index * row_h)
+        row_bottom = row_top - row_h
+        row_mid = row_top - (row_h / 2)
 
-    pdf.setFillColor(label_fill)
-    pdf.rect(x, table_top - row_h, label_w, row_h, fill=1, stroke=0)
-    pdf.setFillColor(ink)
-    pdf.setFont("Helvetica-Bold", 8)
-    pdf.drawString(x + 2 * mm, table_top - 5.5 * mm, "Position")
-
-    for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
-        cell_x = x + label_w + index * slot_w
-        pdf.setFillColor(label_fill)
-        pdf.rect(cell_x, table_top - row_h, slot_w, row_h, fill=1, stroke=0)
         pdf.setFillColor(ink)
-        pdf.setFont("Helvetica-Bold", 7)
-        pdf.drawCentredString(
-            cell_x + slot_w / 2,
-            table_top - 5.2 * mm,
-            f"{mins_to_hhmm(start)}-{mins_to_hhmm(end)}",
-        )
+        pdf.setFont("Courier-Bold", 12)
+        pdf.drawString(x + 1.2 * mm, row_mid + 0.8 * mm, position)
 
-    for row_index, (position, assignments) in enumerate(coverage_rows, start=1):
-        row_y = table_top - row_h * row_index
-        fill = POS_COLORS.get(position, HexColor("#EFE8DB"))
-        pdf.setFillColor(fill)
-        pdf.rect(x, row_y - row_h, label_w, row_h, fill=1, stroke=0)
-        pdf.setFillColor(ink)
-        pdf.setFont("Helvetica-Bold", 8)
-        pdf.drawString(x + 2 * mm, row_y - 5.5 * mm, position)
+        visible_segments = [segment for segment in segments if segment[2] != "-"]
+        if not visible_segments:
+            visible_segments = segments
 
-        for col_index, controller in enumerate(assignments):
-            cell_x = x + label_w + col_index * slot_w
-            pdf.setFillColor(colors.white)
-            pdf.rect(cell_x, row_y - row_h, slot_w, row_h, fill=1, stroke=0)
-            pdf.setFillColor(ink)
-            pdf.setFont("Helvetica", 8)
-            pdf.drawCentredString(cell_x + slot_w / 2, row_y - 5.5 * mm, controller)
+        cell_count = max(1, len(visible_segments))
+        base_cell_w = max(34, timeline_w / cell_count)
+        adjusted_widths = [base_cell_w for _ in visible_segments]
 
-    for row_index in range(len(coverage_rows) + 1):
-        line_y = table_top - row_h * row_index
-        pdf.line(x, line_y, x + width, line_y)
+        if adjusted_widths:
+            width_correction = timeline_w - sum(adjusted_widths)
+            adjusted_widths[-1] += width_correction
 
-    pdf.line(x + label_w, table_top, x + label_w, table_top - table_h)
-    for col_index in range(slot_count + 1):
-        line_x = x + label_w + col_index * slot_w
-        pdf.line(line_x, table_top, line_x, table_top - table_h)
+        seg_x = x + label_w
+        for (seg_start, seg_end, controller), seg_w in zip(visible_segments, adjusted_widths):
+            seg_w = max(12, seg_w)
+            pdf.setStrokeColor(ink)
+            pdf.setLineWidth(1.2)
+            pdf.rect(seg_x, row_mid - 5.6 * mm, seg_w, 11.2 * mm, fill=0, stroke=1)
+            time_font = 10.4
+            ctrl_font = 10.8
+            pdf.setFont("Courier-Bold", time_font)
+            pdf.drawCentredString(
+                seg_x + seg_w / 2,
+                row_mid + 2.1 * mm,
+                f"{mins_to_hhmm(seg_start)}-{mins_to_hhmm(seg_end)}",
+            )
+            pdf.setFont("Courier-Bold", ctrl_font)
+            pdf.drawCentredString(seg_x + seg_w / 2, row_mid - 1.8 * mm, controller)
+            seg_x += seg_w
 
-    return table_top - table_h - 8 * mm
+        _draw_dashed_rule(pdf, x, row_bottom, x + width, row_bottom, dash=(4, 2), width=1.1)
+
+    return first_row_top - (len(coverage_rows) * row_h) - 8 * mm
 
 
-def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, page_bottom):
-    ink = HexColor("#2B2620")
-    line = HexColor("#B7AA92")
-    label_fill = HexColor("#EEE5D3")
+def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, page_bottom, page_w, page_h, start_mins, end_mins):
+    ink = HexColor("#141414")
 
     rows = _build_controller_rows(schedule, slot_order)
 
-    pdf.setFillColor(ink)
-    pdf.setFont("Times-Bold", 11)
-    pdf.drawString(x, y_top, "SECTION B. CONTROLLER ASSIGNMENTS")
+    section_title_gap = 4 * mm
+    row_h = 7.4 * mm
+    ctrl_w = 22 * mm
+    pos_w = 58 * mm
+    from_w = 26 * mm
+    to_w = 26 * mm
+    table_w = ctrl_w + pos_w + from_w + to_w
+    if table_w > width:
+        pos_w -= (table_w - width)
+        table_w = width
 
-    row_h = 7 * mm
-    controller_w = 20 * mm
-    summary_w = width - controller_w
-    table_top = y_top - 4 * mm
-    y_cursor = table_top
-
-    pdf.setFillColor(label_fill)
-    pdf.rect(x, y_cursor - row_h, controller_w, row_h, fill=1, stroke=0)
-    pdf.rect(x + controller_w, y_cursor - row_h, summary_w, row_h, fill=1, stroke=0)
-    pdf.setFillColor(ink)
-    pdf.setFont("Helvetica-Bold", 8)
-    pdf.drawString(x + 2 * mm, y_cursor - 5 * mm, "Ctrl")
-    pdf.drawString(x + controller_w + 2 * mm, y_cursor - 5 * mm, "Assignment Summary")
-    y_cursor -= row_h
-
-    for controller, summary in rows:
-        if y_cursor - row_h < page_bottom:
-            pdf.setFont("Helvetica", 8)
-            pdf.drawString(x, y_cursor - 3 * mm, "Additional controller rows omitted on this page.")
-            return
-
-        pdf.setFillColor(colors.white)
-        pdf.rect(x, y_cursor - row_h, controller_w, row_h, fill=1, stroke=0)
-        pdf.rect(x + controller_w, y_cursor - row_h, summary_w, row_h, fill=1, stroke=0)
+    def draw_section_header(section_y):
         pdf.setFillColor(ink)
-        pdf.setFont("Helvetica-Bold", 8)
-        pdf.drawString(x + 2 * mm, y_cursor - 5 * mm, controller)
-        pdf.setFont("Helvetica", 7.5)
-        pdf.drawString(x + controller_w + 2 * mm, y_cursor - 5 * mm, summary[:140])
-        y_cursor -= row_h
+        pdf.setFont("Courier-Bold", 14)
+        pdf.drawString(x, section_y, "SECTION B. CONTROLLER ASSIGNMENTS")
+        _draw_dashed_rule(pdf, x, section_y - 1.5 * mm, x + table_w, section_y - 1.5 * mm, width=1.2)
 
-    table_bottom = y_cursor
-    table_h = table_top - table_bottom
+    def draw_table_header(table_top):
+        pdf.setFillColor(ink)
+        pdf.setFont("Courier-Bold", 10.8)
+        pdf.drawString(x + 1.4 * mm, table_top - 5 * mm, "CTRL")
+        pdf.drawString(x + ctrl_w + 1.4 * mm, table_top - 5 * mm, "POSITION")
+        pdf.drawString(x + ctrl_w + pos_w + 1.4 * mm, table_top - 5 * mm, "FROM")
+        pdf.drawString(x + ctrl_w + pos_w + from_w + 1.4 * mm, table_top - 5 * mm, "TO")
 
-    pdf.setStrokeColor(line)
-    pdf.setLineWidth(0.5)
-    pdf.rect(x, table_bottom, width, table_h, fill=0, stroke=1)
-    pdf.line(x + controller_w, table_top, x + controller_w, table_bottom)
+        pdf.setStrokeColor(ink)
+        pdf.setLineWidth(1.1)
+        pdf.rect(x, table_top - row_h, table_w, row_h, fill=0, stroke=1)
+        pdf.line(x + ctrl_w, table_top, x + ctrl_w, table_top - row_h)
+        pdf.line(x + ctrl_w + pos_w, table_top, x + ctrl_w + pos_w, table_top - row_h)
+        pdf.line(x + ctrl_w + pos_w + from_w, table_top, x + ctrl_w + pos_w + from_w, table_top - row_h)
+        return table_top - row_h
 
-    current_y = table_top
-    while current_y >= table_bottom:
-        pdf.line(x, current_y, x + width, current_y)
-        current_y -= row_h
+    section_y = y_top
+    draw_section_header(section_y)
+    y_cursor = draw_table_header(section_y - section_title_gap)
+
+    for controller, assignments in rows:
+        group_rows = max(1, len(assignments))
+        group_h = group_rows * row_h
+
+        if y_cursor - group_h < page_bottom:
+            pdf.showPage()
+            _draw_page_header(pdf, page_w, page_h, start_mins, end_mins)
+            section_y = page_h - 18 * mm
+            draw_section_header(section_y)
+            y_cursor = draw_table_header(section_y - section_title_gap)
+
+        pdf.setStrokeColor(ink)
+        pdf.setLineWidth(1.0)
+        pdf.rect(x, y_cursor - group_h, table_w, group_h, fill=0, stroke=1)
+        pdf.line(x + ctrl_w, y_cursor, x + ctrl_w, y_cursor - group_h)
+        pdf.line(x + ctrl_w + pos_w, y_cursor, x + ctrl_w + pos_w, y_cursor - group_h)
+        pdf.line(x + ctrl_w + pos_w + from_w, y_cursor, x + ctrl_w + pos_w + from_w, y_cursor - group_h)
+
+        pdf.setFillColor(ink)
+        pdf.setFont("Courier-Bold", 11.5)
+        ctrl_text_y = y_cursor - (group_h / 2) - 1.2 * mm
+        pdf.drawCentredString(x + (ctrl_w / 2), ctrl_text_y, controller)
+
+        row_cursor = y_cursor
+        for index, (position, start_text, end_text) in enumerate(assignments):
+            pdf.setFont("Courier-Bold", 11)
+            pdf.drawString(x + ctrl_w + 1.4 * mm, row_cursor - 5.3 * mm, position)
+            pdf.drawString(x + ctrl_w + pos_w + 1.4 * mm, row_cursor - 5.3 * mm, start_text)
+            pdf.drawString(x + ctrl_w + pos_w + from_w + 1.4 * mm, row_cursor - 5.3 * mm, end_text)
+
+            row_cursor -= row_h
+            if index < len(assignments) - 1:
+                _draw_dashed_rule(
+                    pdf,
+                    x + ctrl_w,
+                    row_cursor,
+                    x + table_w,
+                    row_cursor,
+                    dash=(4, 2),
+                    width=0.9,
+                )
+
+        _draw_dashed_rule(pdf, x, y_cursor - group_h, x + table_w, y_cursor - group_h, dash=(4, 2), width=1.0)
+        y_cursor -= group_h
 
 
 def _render_schedule_pdf(schedule, slot_order, start_mins, end_mins, position_order):
@@ -253,8 +292,22 @@ def _render_schedule_pdf(schedule, slot_order, start_mins, end_mins, position_or
         content_w,
         schedule,
         position_order or DEFAULT_POSITION_ORDER,
+        start_mins,
+        end_mins,
     )
-    _draw_controller_assignments(pdf, margin_x, next_y, content_w, schedule, slot_order, page_bottom)
+    _draw_controller_assignments(
+        pdf,
+        margin_x,
+        next_y,
+        content_w,
+        schedule,
+        slot_order,
+        page_bottom,
+        page_w,
+        page_h,
+        start_mins,
+        end_mins,
+    )
 
     pdf.save()
     buffer.seek(0)
