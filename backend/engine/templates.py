@@ -5,6 +5,12 @@ def generate_2_3_grid(controllers, half_slots):
         [controllers[(1 + (i + 1) // 2) % count] for i in range(half_slots)],
     ]
 
+def generate_1_2_grid(controllers, half_slots):
+    count = len(controllers)
+    return [
+        [controllers[(i) % count] for i in range(half_slots)],
+        
+    ]
 
 def generate_3_5_grid(controllers, half_slots):
     count = len(controllers)

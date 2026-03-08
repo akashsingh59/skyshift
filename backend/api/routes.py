@@ -3,7 +3,7 @@ from fastapi.responses import Response
 
 from models.roster_models import RosterRequest
 from engine.engine import generate_day_schedule
-from engine.constants import POSITIONS
+from engine.constants import get_positions
 from engine.utils import hhmm_to_mins, validate_shift_window
 from pdf.generator import generate_pdf_from_schedule
 
@@ -33,14 +33,10 @@ def generate_roster(request: RosterRequest):
             detail="Night shift payload is accepted, but night scheduling is not implemented yet",
         )
 
-    if request.openPositions != 8:
-        raise HTTPException(
-            status_code=400,
-            detail="Day scheduling currently supports only 8 open positions; 7-position logic is not implemented yet",
-        )
-
+    
+    active_positions=get_positions(request.openPositions,request.totalControllers)
     controllers = [f"C{i+1}" for i in range(request.totalControllers)]
-    active_positions = POSITIONS[:request.openPositions]
+    
 
     try:
         schedule = generate_day_schedule(
@@ -59,6 +55,7 @@ def generate_roster(request: RosterRequest):
         slot_order=controllers,
         start_mins=start_mins,
         end_mins=end_mins,
+        position_order=active_positions,
     )
 
     return Response(content=pdf_bytes, media_type="application/pdf")

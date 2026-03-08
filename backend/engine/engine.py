@@ -4,10 +4,11 @@ from .builder14 import generate_14_schedule
 
 def generate_day_schedule(controllers, positions, start, end):
     n=len(controllers)
-    if n == 14:
+    p=len(positions)
+    if p==8 and n == 14:
        return generate_14_schedule(controllers, positions, start, end)
     
-    layout = get_layout(n)
+    layout = get_layout(p,n)
 
     pointer = 0
     pos_pointer = 0

@@ -10,7 +10,7 @@ class TimeWindow(BaseModel):
 
 class BaseRosterRequest(TimeWindow):
     shift: Literal["morning", "afternoon", "night"]
-    totalControllers: int = Field(..., ge=12, le=17)
+    totalControllers: int = Field(..., ge=11, le=17)
 
 
 class DayRosterRequest(BaseRosterRequest):
@@ -26,7 +26,7 @@ class DayRosterRequest(BaseRosterRequest):
         )
 
         allowed_controllers = {
-            7: {12, 13},
+            7: {11, 12, 13},
             8: {12, 13, 14},
         }
 

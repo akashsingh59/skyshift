@@ -1,4 +1,4 @@
-from .templates import generate_2_3_grid, generate_3_5_grid
+from .templates import generate_2_3_grid, generate_3_5_grid, generate_1_2_grid
 from .utils import round5
 
 class BlockGenerator:
@@ -18,6 +18,8 @@ class BlockGenerator:
             half_slot = round5(self.total / (3 * count))
         elif pattern_type == "3:5":
             half_slot = round5(self.total / (2 * count))
+        elif pattern_type == "1:2":
+            half_slot=round5(self.total/(3*count))
         else:
             raise ValueError("Unknown pattern")
 
@@ -27,8 +29,10 @@ class BlockGenerator:
 
         if pattern_type == "2:3":
             grid = generate_2_3_grid(self.controllers, half_slots)
-        else:
+        elif pattern_type == "3:5":
             grid = generate_3_5_grid(self.controllers, half_slots)
+        elif pattern_type == "1:2":
+            grid= generate_1_2_grid(self.controllers, half_slots)
 
         return self._build_schedule(grid, time_points)
 

@@ -6,175 +6,266 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from engine.constants import POSITIONS
-from engine.utils import format_duration, mins_to_hhmm
+from engine.utils import mins_to_hhmm
+
+DEFAULT_POSITION_ORDER = [
+    "TWR-M",
+    "TWR-N",
+    "CLD-1",
+    "SMC-S",
+    "SMC-N",
+    "TWR-S1",
+    "SMC-M",
+    "TWR-S2",
+]
 
 POS_COLORS = {
-    "TWR-M": HexColor("#4472C4"),
-    "TWR-N": HexColor("#ED7D31"),
-    "CLD-1": HexColor("#70AD47"),
-    "SMC-S": HexColor("#FFC000"),
-    "SMC-N": HexColor("#F4B183"),
-    "TWR-S1": HexColor("#9DC3E6"),
-    "SMC-M": HexColor("#A5A5A5"),
-    "TWR-S2": HexColor("#FF7C80"),
-}
-
-POS_TEXT = {
-    "TWR-M": colors.white,
-    "TWR-N": colors.white,
-    "CLD-1": colors.white,
-    "SMC-S": HexColor("#1E2A3A"),
-    "SMC-N": HexColor("#1E2A3A"),
-    "TWR-S1": HexColor("#1E2A3A"),
-    "SMC-M": HexColor("#1E2A3A"),
-    "TWR-S2": colors.white,
+    "TWR-M": HexColor("#DCEAF7"),
+    "TWR-N": HexColor("#F7E4D2"),
+    "CLD-1": HexColor("#DDEED7"),
+    "SMC-S": HexColor("#F8F0BF"),
+    "SMC-N": HexColor("#F4DDCB"),
+    "TWR-S1": HexColor("#D9EEF2"),
+    "SMC-M": HexColor("#E3E3E3"),
+    "TWR-S2": HexColor("#F8DCDD"),
 }
 
 
-def _render_schedule_pdf(schedule, slot_order, start_mins, end_mins):
+def _position_sort_key(position, position_order):
+    try:
+        return (0, position_order.index(position))
+    except ValueError:
+        return (1, position)
+
+
+def _collect_positions(schedule, position_order):
+    positions = {position for blocks in schedule.values() for position, _, _ in blocks}
+    return sorted(positions, key=lambda position: _position_sort_key(position, position_order))
+
+
+def _collect_time_boundaries(schedule):
+    boundaries = {time for blocks in schedule.values() for _, start, end in blocks for time in (start, end)}
+    return sorted(boundaries)
+
+
+def _build_coverage_rows(schedule, positions, boundaries):
+    rows = []
+    for position in positions:
+        row = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            assigned = "-"
+            for controller, blocks in schedule.items():
+                for block_position, block_start, block_end in blocks:
+                    if block_position == position and block_start <= start and block_end >= end:
+                        assigned = controller
+                        break
+                if assigned != "-":
+                    break
+            row.append(assigned)
+        rows.append((position, row))
+    return rows
+
+
+def _build_controller_rows(schedule, slot_order):
+    rows = []
+    for controller in slot_order:
+        blocks = sorted(schedule.get(controller, []), key=lambda block: block[1])
+        if not blocks:
+            rows.append((controller, "No assignment"))
+            continue
+        summary = ", ".join(
+            f"{position} {mins_to_hhmm(start)}-{mins_to_hhmm(end)}"
+            for position, start, end in blocks
+        )
+        rows.append((controller, summary))
+    return rows
+
+
+def _draw_page_header(pdf, page_w, page_h, start_mins, end_mins):
+    paper = HexColor("#F7F1E3")
+    ink = HexColor("#2B2620")
+    line = HexColor("#B7AA92")
+
+    pdf.setFillColor(paper)
+    pdf.rect(0, 0, page_w, page_h, fill=1, stroke=0)
+
+    pdf.setStrokeColor(line)
+    pdf.setLineWidth(1)
+    pdf.line(10 * mm, page_h - 18 * mm, page_w - 10 * mm, page_h - 18 * mm)
+
+    pdf.setFillColor(ink)
+    pdf.setFont("Times-Bold", 16)
+    pdf.drawCentredString(page_w / 2, page_h - 12 * mm, "DUTY ROSTER")
+    pdf.setFont("Helvetica", 9)
+    pdf.drawCentredString(
+        page_w / 2,
+        page_h - 16.2 * mm,
+        f"Shift Window  {mins_to_hhmm(start_mins)} - {mins_to_hhmm(end_mins)}",
+    )
+
+
+def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order):
+    ink = HexColor("#2B2620")
+    line = HexColor("#B7AA92")
+    label_fill = HexColor("#EEE5D3")
+
+    positions = _collect_positions(schedule, position_order)
+    boundaries = _collect_time_boundaries(schedule)
+    coverage_rows = _build_coverage_rows(schedule, positions, boundaries)
+
+    pdf.setFillColor(ink)
+    pdf.setFont("Times-Bold", 11)
+    pdf.drawString(x, y_top, "SECTION A. POSITION COVERAGE")
+
+    if len(boundaries) < 2:
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(x, y_top - 8 * mm, "No schedule data available.")
+        return y_top - 12 * mm
+
+    row_h = 8 * mm
+    label_w = 24 * mm
+    slot_count = len(boundaries) - 1
+    slot_w = (width - label_w) / max(1, slot_count)
+    table_top = y_top - 4 * mm
+    table_h = row_h * (len(coverage_rows) + 1)
+
+    pdf.setStrokeColor(line)
+    pdf.setLineWidth(0.5)
+    pdf.rect(x, table_top - table_h, width, table_h, fill=0, stroke=1)
+
+    pdf.setFillColor(label_fill)
+    pdf.rect(x, table_top - row_h, label_w, row_h, fill=1, stroke=0)
+    pdf.setFillColor(ink)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(x + 2 * mm, table_top - 5.5 * mm, "Position")
+
+    for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
+        cell_x = x + label_w + index * slot_w
+        pdf.setFillColor(label_fill)
+        pdf.rect(cell_x, table_top - row_h, slot_w, row_h, fill=1, stroke=0)
+        pdf.setFillColor(ink)
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawCentredString(
+            cell_x + slot_w / 2,
+            table_top - 5.2 * mm,
+            f"{mins_to_hhmm(start)}-{mins_to_hhmm(end)}",
+        )
+
+    for row_index, (position, assignments) in enumerate(coverage_rows, start=1):
+        row_y = table_top - row_h * row_index
+        fill = POS_COLORS.get(position, HexColor("#EFE8DB"))
+        pdf.setFillColor(fill)
+        pdf.rect(x, row_y - row_h, label_w, row_h, fill=1, stroke=0)
+        pdf.setFillColor(ink)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(x + 2 * mm, row_y - 5.5 * mm, position)
+
+        for col_index, controller in enumerate(assignments):
+            cell_x = x + label_w + col_index * slot_w
+            pdf.setFillColor(colors.white)
+            pdf.rect(cell_x, row_y - row_h, slot_w, row_h, fill=1, stroke=0)
+            pdf.setFillColor(ink)
+            pdf.setFont("Helvetica", 8)
+            pdf.drawCentredString(cell_x + slot_w / 2, row_y - 5.5 * mm, controller)
+
+    for row_index in range(len(coverage_rows) + 1):
+        line_y = table_top - row_h * row_index
+        pdf.line(x, line_y, x + width, line_y)
+
+    pdf.line(x + label_w, table_top, x + label_w, table_top - table_h)
+    for col_index in range(slot_count + 1):
+        line_x = x + label_w + col_index * slot_w
+        pdf.line(line_x, table_top, line_x, table_top - table_h)
+
+    return table_top - table_h - 8 * mm
+
+
+def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, page_bottom):
+    ink = HexColor("#2B2620")
+    line = HexColor("#B7AA92")
+    label_fill = HexColor("#EEE5D3")
+
+    rows = _build_controller_rows(schedule, slot_order)
+
+    pdf.setFillColor(ink)
+    pdf.setFont("Times-Bold", 11)
+    pdf.drawString(x, y_top, "SECTION B. CONTROLLER ASSIGNMENTS")
+
+    row_h = 7 * mm
+    controller_w = 20 * mm
+    summary_w = width - controller_w
+    table_top = y_top - 4 * mm
+    y_cursor = table_top
+
+    pdf.setFillColor(label_fill)
+    pdf.rect(x, y_cursor - row_h, controller_w, row_h, fill=1, stroke=0)
+    pdf.rect(x + controller_w, y_cursor - row_h, summary_w, row_h, fill=1, stroke=0)
+    pdf.setFillColor(ink)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(x + 2 * mm, y_cursor - 5 * mm, "Ctrl")
+    pdf.drawString(x + controller_w + 2 * mm, y_cursor - 5 * mm, "Assignment Summary")
+    y_cursor -= row_h
+
+    for controller, summary in rows:
+        if y_cursor - row_h < page_bottom:
+            pdf.setFont("Helvetica", 8)
+            pdf.drawString(x, y_cursor - 3 * mm, "Additional controller rows omitted on this page.")
+            return
+
+        pdf.setFillColor(colors.white)
+        pdf.rect(x, y_cursor - row_h, controller_w, row_h, fill=1, stroke=0)
+        pdf.rect(x + controller_w, y_cursor - row_h, summary_w, row_h, fill=1, stroke=0)
+        pdf.setFillColor(ink)
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(x + 2 * mm, y_cursor - 5 * mm, controller)
+        pdf.setFont("Helvetica", 7.5)
+        pdf.drawString(x + controller_w + 2 * mm, y_cursor - 5 * mm, summary[:140])
+        y_cursor -= row_h
+
+    table_bottom = y_cursor
+    table_h = table_top - table_bottom
+
+    pdf.setStrokeColor(line)
+    pdf.setLineWidth(0.5)
+    pdf.rect(x, table_bottom, width, table_h, fill=0, stroke=1)
+    pdf.line(x + controller_w, table_top, x + controller_w, table_bottom)
+
+    current_y = table_top
+    while current_y >= table_bottom:
+        pdf.line(x, current_y, x + width, current_y)
+        current_y -= row_h
+
+
+def _render_schedule_pdf(schedule, slot_order, start_mins, end_mins, position_order):
     buffer = io.BytesIO()
     page_w, page_h = landscape(A4)
     pdf = canvas.Canvas(buffer, pagesize=landscape(A4))
 
-    bg = HexColor("#14202E")
-    card_bg = HexColor("#1E2D3D")
-    label_bg = HexColor("#0D1926")
-    text_dim = HexColor("#6B8BA4")
-    text_hi = HexColor("#E8F4F8")
+    margin_x = 12 * mm
+    page_bottom = 10 * mm
+    content_w = page_w - 2 * margin_x
 
-    margin = 6 * mm
-    top = page_h - 16 * mm
-    bottom = 4 * mm
-    cols = 5
-    rows = 3
-    gap = 3 * mm
-    total_w = page_w - 2 * margin
-    total_h = top - bottom
-    card_w = (total_w - (cols - 1) * gap) / cols
-    card_h = (total_h - (rows - 1) * gap) / rows
-    cards_per_page = cols * rows
-
-    def draw_page_shell(page_num, page_count):
-        pdf.setFillColor(bg)
-        pdf.rect(0, 0, page_w, page_h, fill=1, stroke=0)
-
-        pdf.setFillColor(label_bg)
-        pdf.rect(0, page_h - 14 * mm, page_w, 14 * mm, fill=1, stroke=0)
-        pdf.setFillColor(text_hi)
-        pdf.setFont("Helvetica-Bold", 12)
-        pdf.drawCentredString(
-            page_w / 2,
-            page_h - 9 * mm,
-            f"DUTY ROSTER  {mins_to_hhmm(start_mins)} - {mins_to_hhmm(end_mins)}",
-        )
-        if page_count > 1:
-            pdf.setFont("Helvetica", 7)
-            pdf.drawRightString(page_w - 4 * mm, page_h - 9 * mm, f"P{page_num}/{page_count}")
-
-        legend_x = page_w - 8 * mm
-        legend_y = page_h - 10.5 * mm
-        for position in reversed(POSITIONS):
-            pdf.setFillColor(POS_COLORS[position])
-            pdf.roundRect(legend_x - 6 * mm, legend_y - 1.5 * mm, 6 * mm, 3 * mm, 1, fill=1, stroke=0)
-            pdf.setFillColor(text_dim)
-            pdf.setFont("Helvetica", 5)
-            pdf.drawRightString(legend_x - 7 * mm, legend_y - 0.8 * mm, position)
-            legend_x -= 18 * mm
-
-    page_count = max(1, (len(slot_order) + cards_per_page - 1) // cards_per_page)
-
-    for index, slot in enumerate(slot_order):
-        page_index = index // cards_per_page
-        page_num = page_index + 1
-        local_index = index % cards_per_page
-        if local_index == 0:
-            if index > 0:
-                pdf.showPage()
-            draw_page_shell(page_num, page_count)
-
-        col_index = local_index % cols
-        row_index = local_index // cols
-        card_x = margin + col_index * (card_w + gap)
-        card_y = top - (row_index + 1) * card_h - row_index * gap
-
-        blocks = schedule.get(slot, [])
-        total_mins = sum(end - start for _, start, end in blocks)
-        total_str = format_duration(total_mins)
-
-        pdf.setFillColor(card_bg)
-        pdf.setStrokeColor(HexColor("#253D52"))
-        pdf.setLineWidth(0.6)
-        pdf.roundRect(card_x, card_y, card_w, card_h, 3, fill=1, stroke=1)
-
-        strip_w = 10 * mm
-        pdf.setFillColor(label_bg)
-        pdf.roundRect(card_x, card_y, strip_w, card_h, 3, fill=1, stroke=0)
-        pdf.rect(card_x + strip_w / 2, card_y, strip_w / 2, card_h, fill=1, stroke=0)
-        pdf.setFillColor(text_hi)
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.saveState()
-        pdf.translate(card_x + strip_w / 2, card_y + card_h / 2)
-        pdf.rotate(90)
-        pdf.drawCentredString(0, -3, slot)
-        pdf.restoreState()
-
-        pill_w = 18 * mm
-        pill_h = 5 * mm
-        pill_x = card_x + card_w - pill_w - 2 * mm
-        pill_y = card_y + card_h - pill_h - 2 * mm
-        pdf.setFillColor(HexColor("#0D3050"))
-        pdf.setStrokeColor(HexColor("#1A6496"))
-        pdf.setLineWidth(0.5)
-        pdf.roundRect(pill_x, pill_y, pill_w, pill_h, 2, fill=1, stroke=1)
-        pdf.setFillColor(HexColor("#7EC8E3"))
-        pdf.setFont("Helvetica-Bold", 6.5)
-        pdf.drawCentredString(pill_x + pill_w / 2, pill_y + 1.5 * mm, f"TOTAL  {total_str}")
-
-        header_bottom = card_y + card_h - pill_h - 4 * mm
-        pdf.setStrokeColor(HexColor("#253D52"))
-        pdf.setLineWidth(0.4)
-        pdf.line(card_x + strip_w + 1.5 * mm, header_bottom, card_x + card_w - 1.5 * mm, header_bottom)
-
-        content_top = header_bottom - 1 * mm
-        content_bottom = card_y + 2 * mm
-        content_h = content_top - content_bottom
-        block_x = card_x + strip_w + 2 * mm
-        block_w = card_w - strip_w - 3.5 * mm
-
-        block_count = max(1, len(blocks))
-        block_gap = 0.8 if block_count > 6 else 1.2
-        total_gap = block_gap * (block_count - 1)
-        block_h = (content_h - total_gap) / block_count if block_count else content_h
-
-        for block_index, (position, start, end) in enumerate(blocks):
-            fill_color = POS_COLORS[position]
-            text_color = POS_TEXT[position]
-            block_y = content_top - (block_index + 1) * block_h - block_index * block_gap
-            block_h_real = max(2.0, block_h)
-
-            pdf.setFillColor(fill_color)
-            pdf.setStrokeColor(HexColor("#14202E"))
-            pdf.setLineWidth(0.5)
-            pdf.roundRect(block_x, block_y, block_w, block_h_real, 2, fill=1, stroke=1)
-
-            mid_y = block_y + block_h_real / 2
-            pos_font = max(5.5, min(8.0, block_h_real * 0.42))
-            time_font = max(5.0, min(7.5, block_h_real * 0.4))
-            pdf.setFillColor(text_color)
-            pdf.setFont("Helvetica-Bold", pos_font)
-            pdf.drawString(block_x + 2.5 * mm, mid_y + 0.5, position)
-            pdf.setFont("Helvetica-Bold", time_font)
-            pdf.drawRightString(
-                block_x + block_w - 2.5 * mm,
-                mid_y + 0.5,
-                f"{mins_to_hhmm(start)} - {mins_to_hhmm(end)}",
-            )
+    _draw_page_header(pdf, page_w, page_h, start_mins, end_mins)
+    next_y = _draw_position_coverage(
+        pdf,
+        margin_x,
+        page_h - 26 * mm,
+        content_w,
+        schedule,
+        position_order or DEFAULT_POSITION_ORDER,
+    )
+    _draw_controller_assignments(pdf, margin_x, next_y, content_w, schedule, slot_order, page_bottom)
 
     pdf.save()
     buffer.seek(0)
     return buffer.read()
 
 
-def generate_pdf_from_schedule(schedule, slot_order, start_mins, end_mins):
-    return _render_schedule_pdf(schedule, slot_order, start_mins, end_mins)
+def generate_pdf_from_schedule(schedule, slot_order, start_mins, end_mins, position_order=None):
+    return _render_schedule_pdf(
+        schedule,
+        slot_order,
+        start_mins,
+        end_mins,
+        position_order or DEFAULT_POSITION_ORDER,
+    )
