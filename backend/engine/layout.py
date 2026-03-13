@@ -38,5 +38,16 @@ def get_layout(p,n):
             {"pattern": "2:3", "size": 3, "pos": 2},
         ]
 
+        elif n==14:
+             return [
+            {"pattern": "1:2", "size": 2, "pos": 1},
+            {"pattern": "1:2", "size": 2, "pos": 1},
+            {"pattern": "1:2", "size": 2, "pos": 1},
+            {"pattern": "1:2", "size": 2, "pos": 1},
+            {"pattern": "1:2", "size": 2, "pos": 1},
+            {"pattern": "1:2", "size": 2, "pos": 1},
+            {"pattern": "1:2", "size": 2, "pos": 1},
+        ]
+
         else:
             raise ValueError("Unsupported strength")

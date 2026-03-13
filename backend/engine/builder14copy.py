@@ -1,11 +1,14 @@
 from .layout import get_layout
 from .block import BlockGenerator
-from .builder14copy import generate_14_schedule
 
-def generate_day_schedule(controllers, positions, start, end):
+
+def generate_14_schedule(controllers, positions, start, end):
     n=len(controllers)
     p=len(positions)
-    
+    CONTRIB = 30
+    MIN_REST_BEFORE_CONTRIB = 5
+    MIN_REST_BEFORE_PRIMARY = 30
+       
     
     layout = get_layout(p,n)
 
