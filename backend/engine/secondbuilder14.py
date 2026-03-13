@@ -7,16 +7,17 @@ def generate_14_schedule(controllers, positions, start, end):
     assert len(positions) == 8, "This builder requires 8 positions"
 
     CONTRIB = 30
-    MIN_REST_BEFORE_CONTRIB = 5
-    MIN_REST_BEFORE_PRIMARY = 30
+    SWITCH_GAP = 5
+    VACANT_CONTROLLER = "VACANT"
 
     layout = get_layout(len(positions), len(controllers))
 
     pointer = 0
     pos_pointer = 0
     full_schedule = {controller: [] for controller in controllers}
+    full_schedule[VACANT_CONTROLLER] = []
 
-    # Build the fixed primary schedule first.
+    # 1. Build the 7 primary channels first.
     for block in layout:
         size = block["size"]
         pos_count = block["pos"]
@@ -41,102 +42,89 @@ def generate_14_schedule(controllers, positions, start, end):
     primary_positions = set(positions[:7])
     contributory_position = positions[7]
 
-    def primary_intervals_for_controller(controller):
+    def primary_intervals(controller):
         return sorted(
             [
                 (block_start, block_end)
-                for position, block_start, block_end in full_schedule.get(controller, [])
+                for position, block_start, block_end in full_schedule[controller]
                 if position in primary_positions
             ],
-            key=lambda interval: interval[0],
+            key=lambda item: item[0],
         )
 
-    def slot_is_legal_for_controller(controller, slot_start, slot_end):
-        primaries = primary_intervals_for_controller(controller)
+    # 2. Build legal rest periods for each controller.
+    # A contributory slot can sit inside off-duty time as long as:
+    # - it starts at least 5 min after the previous primary ends
+    # - it ends at least 5 min before the next primary starts
+    def rest_periods(controller):
+        primaries = primary_intervals(controller)
+        rests = []
 
-        overlaps_primary = any(
-            not (slot_end <= p_start or slot_start >= p_end)
-            for p_start, p_end in primaries
-        )
-        if overlaps_primary:
-            return False
+        if not primaries:
+            rests.append((start, end))
+            return rests
 
-        previous_primary_end = None
-        next_primary_start = None
+        # Before first primary
+        first_start = primaries[0][0]
+        rest_start = start
+        rest_end = first_start - SWITCH_GAP
+        if rest_start < rest_end:
+            rests.append((rest_start, rest_end))
 
-        for p_start, p_end in primaries:
-            if p_end <= slot_start:
-                previous_primary_end = p_end
-            if p_start >= slot_end and next_primary_start is None:
-                next_primary_start = p_start
+        # Between primaries
+        for i in range(len(primaries) - 1):
+            prev_end = primaries[i][1]
+            next_start = primaries[i + 1][0]
 
-        if previous_primary_end is not None:
-            if slot_start - previous_primary_end < MIN_REST_BEFORE_CONTRIB:
-                return False
+            rest_start = prev_end + SWITCH_GAP
+            rest_end = next_start - SWITCH_GAP
 
-        if next_primary_start is not None:
-            if next_primary_start - slot_end < MIN_REST_BEFORE_PRIMARY:
-                return False
+            if rest_start < rest_end:
+                rests.append((rest_start, rest_end))
 
-        return True
+        # After last primary
+        last_end = primaries[-1][1]
+        rest_start = last_end + SWITCH_GAP
+        rest_end = end
+        if rest_start < rest_end:
+            rests.append((rest_start, rest_end))
 
-    # Fixed 13 half-hour contributory slots covering the full shift.
+        return rests
+
+    controller_rest_map = {
+        controller: rest_periods(controller)
+        for controller in controllers
+    }
+
+    # 3. Build fixed 30-minute contributory slots across the shift.
     contributory_slots = []
     t = start
-    while t < end:
-        slot_end = min(t + CONTRIB, end)
-        if slot_end - t != CONTRIB:
-            raise RuntimeError("Shift length must be divisible into 30-minute contributory slots")
-        contributory_slots.append((t, slot_end))
-        t = slot_end
+    while t + CONTRIB <= end:
+        contributory_slots.append((t, t + CONTRIB))
+        t += CONTRIB
 
-    # Build bipartite graph: slot index -> eligible controllers.
-    slot_to_candidates = {}
-    for slot_index, (slot_start, slot_end) in enumerate(contributory_slots):
-        candidates = [
-            controller
-            for controller in controllers
-            if slot_is_legal_for_controller(controller, slot_start, slot_end)
-        ]
-        slot_to_candidates[slot_index] = candidates
+    # 4. Greedily assign each slot to the first remaining controller whose
+    #    legal rest period fully contains that slot. One controller gets at most one slot.
+    remaining = list(controllers)
 
-    # Match each slot to exactly one controller, each controller to at most one slot.
-    assigned_controller_for_slot = {}
-    assigned_slot_for_controller = {}
+    for slot_start, slot_end in contributory_slots:
+        assigned_controller = None
 
-    def try_assign(slot_index, seen_controllers):
-        for controller in slot_to_candidates[slot_index]:
-            if controller in seen_controllers:
-                continue
-            seen_controllers.add(controller)
+        for controller in remaining:
+            rests = controller_rest_map[controller]
+            if any(rest_start <= slot_start and slot_end <= rest_end for rest_start, rest_end in rests):
+                assigned_controller = controller
+                break
 
-            if controller not in assigned_slot_for_controller:
-                assigned_slot_for_controller[controller] = slot_index
-                assigned_controller_for_slot[slot_index] = controller
-                return True
-
-            current_slot = assigned_slot_for_controller[controller]
-            if try_assign(current_slot, seen_controllers):
-                assigned_slot_for_controller[controller] = slot_index
-                assigned_controller_for_slot[slot_index] = controller
-                return True
-
-        return False
-
-    # Harder slots first reduces backtracking failures.
-    slot_order = sorted(slot_to_candidates, key=lambda idx: len(slot_to_candidates[idx]))
-
-    for slot_index in slot_order:
-        if not try_assign(slot_index, set()):
-            slot_start, slot_end = contributory_slots[slot_index]
-            raise RuntimeError(
-                f"Contributory channel cannot be manned for slot {slot_start}-{slot_end}"
+        if assigned_controller is None:
+            full_schedule[VACANT_CONTROLLER].append(
+                (contributory_position, slot_start, slot_end)
             )
-
-    # Append exactly one contributory assignment per matched controller.
-    for slot_index, controller in assigned_controller_for_slot.items():
-        slot_start, slot_end = contributory_slots[slot_index]
-        full_schedule[controller].append((contributory_position, slot_start, slot_end))
+        else:
+            full_schedule[assigned_controller].append(
+                (contributory_position, slot_start, slot_end)
+            )
+            remaining.remove(assigned_controller)
 
     for controller in full_schedule:
         full_schedule[controller].sort(key=lambda item: item[1])
