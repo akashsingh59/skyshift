@@ -2,7 +2,7 @@ import { useState } from "react";
 import ShiftCard from "./ShiftCard";
 
 function nightControllerLogic() {
-  return [15, 16, 17];
+  return [16, 17];
 }
 
 const channelLabels = {
