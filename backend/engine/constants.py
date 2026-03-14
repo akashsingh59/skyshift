@@ -1,3 +1,19 @@
+POSITIONS = [1, 2, 3, 4, 5, 6, 7, 8]
+
+NIGHT_POSITION_LABELS = {
+    1: "TWR-M",
+    2: "TWR-N",
+    3: "CLD-1",
+    4: "SMC-S",
+    5: "SMC-N",
+    6: "TWR-S1",
+    7: "SMC-M",
+    8: "TWR-S2",
+}
+
+NIGHT_POSITION_ORDER = [NIGHT_POSITION_LABELS[channel] for channel in POSITIONS]
+
+
 def get_positions(p,n):
     if p>8 or p<7:
          return [

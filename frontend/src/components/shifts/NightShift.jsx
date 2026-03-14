@@ -5,6 +5,17 @@ function nightControllerLogic() {
   return [15, 16, 17];
 }
 
+const channelLabels = {
+  1: "TWR-M",
+  2: "TWR-N",
+  3: "CLD-1",
+  4: "SMC-S",
+  5: "SMC-N",
+  6: "TWR-S1",
+  7: "SMC-M",
+  8: "TWR-S2",
+};
+
 export default function NightShift({ onGenerate }) {
   const [customChannelTimings, setCustomChannelTimings] = useState([]);
   const [selectedChannel, setSelectedChannel] = useState(1);
@@ -121,11 +132,7 @@ export default function NightShift({ onGenerate }) {
   }
 
   function buildFinalChannelTimings() {
-    return allChannels.map((channel) => {
-      const custom = customChannelTimings.find((item) => item.channel === channel);
-      if (custom) return custom;
-      return { channel, open: "15:00", close: "02:00" };
-    });
+    return customChannelTimings;
   }
 
   function handleNightGenerate(basePayload) {
@@ -159,7 +166,7 @@ export default function NightShift({ onGenerate }) {
           ) : (
             availableChannels.map((channel) => (
               <option key={channel} value={channel}>
-                Channel {channel}
+                {channelLabels[channel]}
               </option>
             ))
           )}
@@ -170,6 +177,7 @@ export default function NightShift({ onGenerate }) {
           value={selectedOpen}
           onChange={(e) => setSelectedOpen(e.target.value)}
           aria-label="Open time"
+          title="Closed from"
           disabled={availableChannels.length === 0}
           style={inputStyle}
         />
@@ -179,6 +187,7 @@ export default function NightShift({ onGenerate }) {
           value={selectedClose}
           onChange={(e) => setSelectedClose(e.target.value)}
           aria-label="Close time"
+          title="Closed to"
           disabled={availableChannels.length === 0}
           style={inputStyle}
         />
@@ -199,7 +208,7 @@ export default function NightShift({ onGenerate }) {
         {customChannelTimings.map((item) => (
           <div key={item.channel} style={itemStyle}>
             <span>
-              CH-{item.channel}: {item.open} - {item.close}
+              {channelLabels[item.channel]}: closed {item.open} - {item.close}
             </span>
             <button
               type="button"

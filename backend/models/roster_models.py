@@ -101,6 +101,23 @@ class NightRosterRequest(BaseRosterRequest):
 
         return channels
 
+    def to_night_scheduler_payload(self):
+        channel_closures = []
+
+        for item in self.channelTimings:
+            channel_closures.append(
+                {
+                    "channel": item.channel,
+                    "closeFrom": item.open,
+                    "closeTo": item.close,
+                }
+            )
+
+        return {
+            "totalControllers": self.totalControllers,
+            "channelClosures": channel_closures,
+        }
+
 
 RosterRequest = Annotated[
     Union[MorningRosterRequest, AfternoonRosterRequest, NightRosterRequest],

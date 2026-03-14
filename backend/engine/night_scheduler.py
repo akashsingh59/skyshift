@@ -1,7 +1,7 @@
 import re
 from collections import defaultdict
 
-from .constants import POSITIONS
+from .constants import NIGHT_POSITION_LABELS, POSITIONS
 
 NIGHT_START = 15 * 60
 NIGHT_END = 26 * 60
@@ -237,6 +237,7 @@ def _schedule_block2(block_name, block_slots, open_by_slot, controllers, initial
             same_channel = st["prevChannel"] == channel and st["workedPrev"]
             starting_new = not st["workedPrev"]
             next_slot_idx = slot_idx + 1
+            prefers_rest_after_90 = st["workedPrev"] and st["consecutive"] >= 3
             closes_next = (
                 starting_new
                 and slot_idx < last_slot_idx
@@ -249,6 +250,8 @@ def _schedule_block2(block_name, block_slots, open_by_slot, controllers, initial
                 # Prefer starts that can continue into next slot (>= 1 hour).
                 0 if not closes_next else 1,
                 0 if not st["workedPrev"] else 1,
+                # Prefer giving rest after 1.5 hours when coverage allows.
+                0 if not prefers_rest_after_90 else 1,
                 st["totalWorked"],
                 st["consecutive"],
                 0 if same_channel else 1,
@@ -526,9 +529,26 @@ def _infeasible_half_result(reason):
 def _choose_best_split(total_controllers, block_slots, open_by_slot):
     best = None
     infeasible_reasons = []
+    first_half_lower_bound = max(
+        _required_block1_controllers(block_slots["first_half_block_1"], open_by_slot),
+        _max_open_in_slots(block_slots["first_half_block_2"], open_by_slot),
+    )
+    second_half_lower_bound = max(
+        _required_block1_controllers(block_slots["second_half_block_1"], open_by_slot),
+        _max_open_in_slots(block_slots["second_half_block_2"], open_by_slot),
+    )
 
-    # Keep both halves non-empty.
-    for first_available in range(1, total_controllers):
+    minimum_total_required = first_half_lower_bound + second_half_lower_bound
+    if total_controllers < minimum_total_required:
+        reason = (
+            f"No feasible night split for totalControllers={total_controllers}. "
+            f"Minimum required with current channel timings is {minimum_total_required} "
+            f"({first_half_lower_bound} first-half + {second_half_lower_bound} second-half)."
+        )
+        return _infeasible_half_result(reason), _infeasible_half_result(reason), (0, 0)
+
+    # Only evaluate splits that can satisfy each half's lower bound.
+    for first_available in range(first_half_lower_bound, total_controllers - second_half_lower_bound + 1):
         second_available = total_controllers - first_available
 
         first_half = _find_minimum_feasible_half(
@@ -621,8 +641,8 @@ def _run_night_schedule(payload):
     selected_split = (int(first_half_controllers), int(second_half_controllers))
     if total_controllers_raw is not None:
         total_controllers = int(total_controllers_raw)
-        if total_controllers < 16 or total_controllers > 17:
-            raise ValueError("Total night controllers must be between 16 and 17")
+        if total_controllers < 15 or total_controllers > 17:
+            raise ValueError("Total night controllers must be between 15 and 17")
 
         first_half, second_half, selected_split = _choose_best_split(total_controllers, block_slots, open_by_slot)
         first_half_controllers = selected_split[0]
@@ -783,13 +803,12 @@ def build_night_schedule_for_pdf(payload):
     edges = result["edges"]
     controller_order = result["controllerPools"]["firstHalf"] + result["controllerPools"]["secondHalf"]
     schedule = {controller: [] for controller in controller_order}
-    pos_index = {channel: idx for idx, channel in enumerate(POSITIONS)}
 
     for block in result["blockResults"]:
         for assignment in block["assignments"]:
             schedule[assignment["controller"]].append(
                 (
-                    pos_index[assignment["channel"]],
+                    NIGHT_POSITION_LABELS[assignment["channel"]],
                     edges[assignment["slotStart"]],
                     edges[assignment["slotEnd"]],
                 )
