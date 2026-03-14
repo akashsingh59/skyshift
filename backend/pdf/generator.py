@@ -147,14 +147,30 @@ def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order, shif
         pdf.drawString(x, y_top - 8 * mm, "No schedule data available.")
         return y_top - 12 * mm
 
-    row_h = 13.5 * mm
+    min_row_h = 13.5 * mm
     row_gap = 3 * mm
     label_w = 28 * mm
     timeline_w = width - label_w
     first_row_top = y_top - 6 * mm
+    min_seg_w = 34 * mm
+    line_h = 11.2 * mm
+    line_gap = 2 * mm
+    row_top = first_row_top
 
-    for row_index, (position, segments) in enumerate(coverage_rows):
-        row_top = first_row_top - (row_index * (row_h + row_gap))
+    for position, segments in coverage_rows:
+        visible_segments = [segment for segment in segments if segment[2] != "-"]
+        if not visible_segments:
+            visible_segments = segments
+
+        segments_per_line = max(1, int(timeline_w // min_seg_w))
+        segment_lines = [
+            visible_segments[i:i + segments_per_line]
+            for i in range(0, len(visible_segments), segments_per_line)
+        ]
+        row_h = max(
+            min_row_h,
+            len(segment_lines) * line_h + max(0, len(segment_lines) - 1) * line_gap + 2 * mm,
+        )
         row_bottom = row_top - row_h
         row_mid = row_top - (row_h / 2)
 
@@ -162,39 +178,33 @@ def _draw_position_coverage(pdf, x, y_top, width, schedule, position_order, shif
         pdf.setFont("Courier-Bold", 12)
         pdf.drawString(x + 1.2 * mm, row_mid + 0.8 * mm, position)
 
-        visible_segments = [segment for segment in segments if segment[2] != "-"]
-        if not visible_segments:
-            visible_segments = segments
+        content_top = row_top - 1 * mm
+        for line_index, line_segments in enumerate(segment_lines):
+            seg_x = x + label_w
+            seg_w = timeline_w / max(1, len(line_segments))
+            line_top = content_top - line_index * (line_h + line_gap)
+            line_mid = line_top - (line_h / 2)
 
-        cell_count = max(1, len(visible_segments))
-        base_cell_w = max(34, timeline_w / cell_count)
-        adjusted_widths = [base_cell_w for _ in visible_segments]
-
-        if adjusted_widths:
-            width_correction = timeline_w - sum(adjusted_widths)
-            adjusted_widths[-1] += width_correction
-
-        seg_x = x + label_w
-        for (seg_start, seg_end, controller), seg_w in zip(visible_segments, adjusted_widths):
-            seg_w = max(12, seg_w)
-            pdf.setStrokeColor(ink)
-            pdf.setLineWidth(1.2)
-            pdf.rect(seg_x, row_mid - 5.6 * mm, seg_w, 11.2 * mm, fill=0, stroke=1)
-            time_font = 10.4
-            ctrl_font = 10.8
-            pdf.setFont("Courier-Bold", time_font)
-            pdf.drawCentredString(
-                seg_x + seg_w / 2,
-                row_mid + 2.1 * mm,
-                f"{mins_to_hhmm(seg_start)}-{mins_to_hhmm(seg_end)}",
-            )
-            pdf.setFont("Courier-Bold", ctrl_font)
-            pdf.drawCentredString(seg_x + seg_w / 2, row_mid - 1.8 * mm, controller)
-            seg_x += seg_w
+            for seg_start, seg_end, controller in line_segments:
+                pdf.setStrokeColor(ink)
+                pdf.setLineWidth(1.2)
+                pdf.rect(seg_x, line_mid - (line_h / 2), seg_w, line_h, fill=0, stroke=1)
+                time_font = 10.4
+                ctrl_font = 10.8
+                pdf.setFont("Courier-Bold", time_font)
+                pdf.drawCentredString(
+                    seg_x + seg_w / 2,
+                    line_mid + 2.1 * mm,
+                    f"{mins_to_hhmm(seg_start)}-{mins_to_hhmm(seg_end)}",
+                )
+                pdf.setFont("Courier-Bold", ctrl_font)
+                pdf.drawCentredString(seg_x + seg_w / 2, line_mid - 1.8 * mm, controller)
+                seg_x += seg_w
 
         _draw_dashed_rule(pdf, x, row_bottom - (row_gap / 2), x + width, row_bottom - (row_gap / 2), dash=(4, 2), width=1.1)
+        row_top = row_bottom - row_gap
 
-    return first_row_top - (len(coverage_rows) * (row_h + row_gap)) - 8 * mm
+    return row_top - 8 * mm
 
 
 def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, page_bottom, page_w, page_h, start_mins, end_mins):
