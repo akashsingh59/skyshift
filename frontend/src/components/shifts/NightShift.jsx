@@ -109,21 +109,29 @@ export default function NightShift({ onGenerate }) {
         </select>
 
         <input
-          type="time"
+          type="text"
           value={selectedOpen}
           onChange={(e) => setSelectedOpen(e.target.value)}
           aria-label="Open time"
           title="Closed from"
+          placeholder="15:00"
+          inputMode="numeric"
+          pattern="[0-2][0-9]:[0-5][0-9]"
+          maxLength={5}
           disabled={availableChannels.length === 0}
           className="night-input"
         />
 
         <input
-          type="time"
+          type="text"
           value={selectedClose}
           onChange={(e) => setSelectedClose(e.target.value)}
           aria-label="Close time"
           title="Closed to"
+          placeholder="02:00"
+          inputMode="numeric"
+          pattern="[0-2][0-9]:[0-5][0-9]"
+          maxLength={5}
           disabled={availableChannels.length === 0}
           className="night-input"
         />
