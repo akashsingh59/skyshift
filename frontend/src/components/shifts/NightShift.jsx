@@ -29,8 +29,15 @@ export default function NightShift({ onGenerate }) {
   );
   const availableChannels = allChannels.filter((ch) => !configuredChannels.has(ch));
 
+  function formatNightTimeInput(value) {
+    const digits = value.replace(/\D/g, "").slice(0, 4);
+    if (digits.length <= 2) return digits;
+    return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  }
+
   function isAllowedTime(timeValue) {
-    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(timeValue);
+    const normalized = formatNightTimeInput(timeValue);
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(normalized);
     if (!match) return false;
     const hour = Number(match[1]);
     const minute = Number(match[2]);
@@ -49,7 +56,14 @@ export default function NightShift({ onGenerate }) {
     setTimingError("");
 
     setCustomChannelTimings((prev) =>
-      [...prev, { channel: selectedChannel, open: selectedOpen, close: selectedClose }].sort(
+      [
+        ...prev,
+        {
+          channel: selectedChannel,
+          open: formatNightTimeInput(selectedOpen),
+          close: formatNightTimeInput(selectedClose),
+        },
+      ].sort(
         (a, b) => a.channel - b.channel,
       ),
     );
@@ -91,50 +105,66 @@ export default function NightShift({ onGenerate }) {
       </style>
 
       <div className="night-control-row">
-        <select
-          value={selectedChannel}
-          onChange={(e) => setSelectedChannel(Number(e.target.value))}
-          aria-label="Channel"
-          disabled={availableChannels.length === 0}
-        >
-          {availableChannels.length === 0 ? (
-            <option value="">All channels configured</option>
-          ) : (
-            availableChannels.map((channel) => (
-              <option key={channel} value={channel}>
-                {channelLabels[channel]}
-              </option>
-            ))
-          )}
-        </select>
+        <div className="night-field">
+          <label className="night-field-label" htmlFor="night-channel">
+            Position
+          </label>
+          <select
+            id="night-channel"
+            value={selectedChannel}
+            onChange={(e) => setSelectedChannel(Number(e.target.value))}
+            aria-label="Position"
+            disabled={availableChannels.length === 0}
+          >
+            {availableChannels.length === 0 ? (
+              <option value="">All channels configured</option>
+            ) : (
+              availableChannels.map((channel) => (
+                <option key={channel} value={channel}>
+                  {channelLabels[channel]}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
 
-        <input
-          type="text"
-          value={selectedOpen}
-          onChange={(e) => setSelectedOpen(e.target.value)}
-          aria-label="Open time"
-          title="Closed from"
-          placeholder="15:00"
-          inputMode="numeric"
-          pattern="[0-2][0-9]:[0-5][0-9]"
-          maxLength={5}
-          disabled={availableChannels.length === 0}
-          className="night-input"
-        />
+        <div className="night-field">
+          <label className="night-field-label" htmlFor="night-closed-from">
+            Closed From
+          </label>
+          <input
+            id="night-closed-from"
+            type="text"
+            value={selectedOpen}
+            onChange={(e) => setSelectedOpen(formatNightTimeInput(e.target.value))}
+            aria-label="Closed from"
+            placeholder="1830"
+            inputMode="numeric"
+            pattern="[0-2][0-9]:?[0-5][0-9]"
+            maxLength={5}
+            disabled={availableChannels.length === 0}
+            className="night-input"
+          />
+        </div>
 
-        <input
-          type="text"
-          value={selectedClose}
-          onChange={(e) => setSelectedClose(e.target.value)}
-          aria-label="Close time"
-          title="Closed to"
-          placeholder="02:00"
-          inputMode="numeric"
-          pattern="[0-2][0-9]:[0-5][0-9]"
-          maxLength={5}
-          disabled={availableChannels.length === 0}
-          className="night-input"
-        />
+        <div className="night-field">
+          <label className="night-field-label" htmlFor="night-closed-to">
+            Closed To
+          </label>
+          <input
+            id="night-closed-to"
+            type="text"
+            value={selectedClose}
+            onChange={(e) => setSelectedClose(formatNightTimeInput(e.target.value))}
+            aria-label="Closed to"
+            placeholder="2330"
+            inputMode="numeric"
+            pattern="[0-2][0-9]:?[0-5][0-9]"
+            maxLength={5}
+            disabled={availableChannels.length === 0}
+            className="night-input"
+          />
+        </div>
 
         <button
           type="button"
@@ -145,6 +175,7 @@ export default function NightShift({ onGenerate }) {
           Add
         </button>
       </div>
+      <div className="night-help">Use 24-hour timing like 1830, 23:30, 0200.</div>
       {timingError && <div className="night-error">{timingError}</div>}
 
       <div className="night-list">
