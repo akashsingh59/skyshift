@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ControllerSelect from "./common/ControllerSelect";
 
 export default function ShiftCard({
@@ -9,11 +9,22 @@ export default function ShiftCard({
   showOpenPositions,
   onGenerate,
   afterControllers = null,
+  defaultControllers = null,
 }) {
   const [openPositions, setOpenPositions] = useState(8);
-  const [controllers, setControllers] = useState(12);
   const controllerOptions = controllerLogic(openPositions);
+  const initialControllers =
+    defaultControllers && controllerOptions.includes(defaultControllers)
+      ? defaultControllers
+      : (controllerOptions[0] ?? 12);
+  const [controllers, setControllers] = useState(initialControllers);
   const defaultContributoryChannel = 1;
+
+  useEffect(() => {
+    if (!controllerOptions.includes(controllers)) {
+      setControllers(controllerOptions[0] ?? 12);
+    }
+  }, [controllerOptions, controllers]);
 
   const needsChannel =
     (openPositions === 7 && controllers === 13) ||

@@ -3,9 +3,15 @@ from collections import defaultdict
 
 from .constants import NIGHT_POSITION_LABELS, POSITIONS
 
+try:
+    from ortools.sat.python import cp_model
+except ImportError:  # pragma: no cover - depends on local environment
+    cp_model = None
+
 NIGHT_START = 15 * 60
 NIGHT_END = 26 * 60
 SLOT_MINUTES = 30
+MAX_CONSECUTIVE_SLOTS = 4
 
 BLOCKS = {
     "first_half_block_1": (15 * 60, 16 * 60 + 30),
@@ -14,7 +20,27 @@ BLOCKS = {
     "second_half_block_2": (22 * 60, 26 * 60),
 }
 
+REST_WINDOW = (15 * 60, 18 * 60)
+FIRST_HALF_ONLY_WINDOW = BLOCKS["first_half_block_2"]
+SECOND_HALF_ONLY_WINDOW = BLOCKS["second_half_block_2"]
+SOLVE_TIME_LIMIT_SECONDS = 10
+OBJECTIVE_USED_CONTROLLER_WEIGHT = 100000
+OBJECTIVE_HALF_GAP_WEIGHT = 5000
+OBJECTIVE_OVERALL_GAP_WEIGHT = 3000
+OBJECTIVE_FOURTH_SLOT_WEIGHT = 600
+OBJECTIVE_SINGLETON_WEIGHT = 200
+OBJECTIVE_RUN_START_WEIGHT = 25
+OBJECTIVE_MAX_WORK_WEIGHT = 10
+
 TIME_RE = re.compile(r"^(\d{2}):(\d{2})$")
+
+
+def _ensure_ortools_available():
+    if cp_model is None:
+        raise RuntimeError(
+            "Night scheduling requires the 'ortools' package. "
+            "Install backend dependencies again after adding ortools."
+        )
 
 
 def _parse_hhmm_to_night_minutes(value):
@@ -47,11 +73,10 @@ def _slot_edges():
     return list(range(NIGHT_START, NIGHT_END + SLOT_MINUTES, SLOT_MINUTES))
 
 
-def _build_controller_ids(prefix, count):
-    count_int = int(count)
-    if count_int < 0:
-        raise ValueError("Controller count cannot be negative")
-    return [f"{prefix}{idx + 1}" for idx in range(count_int)]
+def _slot_range_to_indexes(start_mins, end_mins):
+    start_idx = (start_mins - NIGHT_START) // SLOT_MINUTES
+    end_idx = (end_mins - NIGHT_START) // SLOT_MINUTES
+    return list(range(start_idx, end_idx))
 
 
 def _normalize_closures(raw_closures):
@@ -100,500 +125,485 @@ def _build_open_channels_by_slot(closures):
     return edges, open_by_slot
 
 
-def _slot_range_to_indexes(start_mins, end_mins):
-    start_idx = (start_mins - NIGHT_START) // SLOT_MINUTES
-    end_idx = (end_mins - NIGHT_START) // SLOT_MINUTES
-    return list(range(start_idx, end_idx))
+def _window_slots(window):
+    return _slot_range_to_indexes(window[0], window[1])
 
 
-def _schedule_block1(block_name, block_slots, open_by_slot, controllers):
-    if not controllers:
-        return {
-            "block": block_name,
-            "status": "infeasible",
-            "reason": "No controllers available for block",
-            "assignments": [],
-            "uncovered": [
-                {
-                    "slot": idx,
-                    "openChannels": open_by_slot[idx],
-                }
-                for idx in block_slots
-                if open_by_slot[idx]
-            ],
-        }
-
-    # Block 1 assignments are fixed for 1.5h; any channel open at any moment
-    # in the block needs one dedicated controller for the whole block.
-    union_open = set()
-    for idx in block_slots:
-        union_open.update(open_by_slot[idx])
-
-    ordered_union = [channel for channel in POSITIONS if channel in union_open]
-    if len(ordered_union) > len(controllers):
-        return {
-            "block": block_name,
-            "status": "infeasible",
-            "reason": "Insufficient controllers to cover all open channels in block 1",
-            "assignments": [],
-            "uncovered": [
-                {
-                    "slot": idx,
-                    "openChannels": open_by_slot[idx],
-                }
-                for idx in block_slots
-                if open_by_slot[idx]
-            ],
-        }
-
-    assignments = []
-    for ctrl, channel in zip(controllers, ordered_union):
-        assignments.append(
-            {
-                "controller": ctrl,
-                "channel": channel,
-                "slotStart": block_slots[0],
-                "slotEnd": block_slots[-1] + 1,
-            }
-        )
-
-    return {
-        "block": block_name,
-        "status": "ok",
-        "reason": "",
-        "assignments": assignments,
-        "uncovered": [],
-    }
+def _sum_bool_vars(model, vars_list, name):
+    total = model.NewIntVar(0, len(vars_list), name)
+    model.Add(total == sum(vars_list))
+    return total
 
 
-def _allowed_to_work(state):
-    if not state["everWorked"]:
-        return True
-    if state["workedPrev"]:
-        return state["consecutive"] < 4
-    return state["restSlots"] >= 1
+def _build_solver_model(
+    total_controllers,
+    open_by_slot,
+    requested_first_half=None,
+    requested_second_half=None,
+    require_all_used=False,
+):
+    _ensure_ortools_available()
 
+    model = cp_model.CpModel()
+    slot_count = len(open_by_slot)
+    controllers = list(range(total_controllers))
 
-def _schedule_block2(block_name, block_slots, open_by_slot, controllers, initial_worked_slots=None):
-    if not controllers:
-        return {
-            "block": block_name,
-            "status": "infeasible",
-            "reason": "No controllers available for block",
-            "assignments": [],
-            "uncovered": [],
-        }
+    rest_slots = _window_slots(REST_WINDOW)
+    first_half_only_slots = _window_slots(FIRST_HALF_ONLY_WINDOW)
+    second_half_only_slots = _window_slots(SECOND_HALF_ONLY_WINDOW)
 
-    base_worked = initial_worked_slots or {}
-    states = {
-        ctrl: {
-            "workedPrev": False,
-            "consecutive": 0,
-            "restSlots": 0,
-            "everWorked": False,
-            "totalWorked": int(base_worked.get(ctrl, 0)),
-            "prevChannel": None,
-        }
-        for ctrl in controllers
-    }
+    x = {}
+    work = {}
+    half = {ctrl: model.NewBoolVar(f"half_{ctrl}") for ctrl in controllers}
+    used = {ctrl: model.NewBoolVar(f"used_{ctrl}") for ctrl in controllers}
+    work_totals = {}
+    first_half_used = {}
+    second_half_used = {}
+    run_starts = {}
+    singleton_runs = {}
+    fourth_plus_slots = {}
+    first_half_selected_work = {}
+    second_half_selected_work = {}
+    first_half_adjusted_work = {}
+    second_half_adjusted_work = {}
 
-    slot_assignments = {}
-
-    for slot_idx in block_slots:
-        open_channels = open_by_slot[slot_idx]
-        last_slot_idx = block_slots[-1]
-        if len(open_channels) > len(controllers):
-            return {
-                "block": block_name,
-                "status": "infeasible",
-                "reason": f"Open channels exceed controller count at slot {slot_idx}",
-                "assignments": [],
-                "uncovered": [{"slot": slot_idx, "openChannels": open_channels}],
-            }
-
-        chosen = {}
-        used = set()
-
-        # Enforce minimum 1-hour duty stints where possible:
-        # if a controller just started a stint in previous slot (consecutive == 1),
-        # keep them on the same channel this slot unless that channel is closed.
-        for ctrl in controllers:
-            st = states[ctrl]
-            if st["workedPrev"] and st["consecutive"] == 1 and st["prevChannel"] in open_channels:
-                channel = st["prevChannel"]
-                if channel in chosen and chosen[channel] != ctrl:
-                    return {
-                        "block": block_name,
-                        "status": "infeasible",
-                        "reason": f"Conflicting mandatory continuation at slot {slot_idx}",
-                        "assignments": [],
-                        "uncovered": [{"slot": slot_idx, "openChannels": open_channels}],
-                    }
-                chosen[channel] = ctrl
-                used.add(ctrl)
-
-        def score(ctrl, channel):
-            st = states[ctrl]
-            same_channel = st["prevChannel"] == channel and st["workedPrev"]
-            starting_new = not st["workedPrev"]
-            next_slot_idx = slot_idx + 1
-            prefers_rest_after_90 = st["workedPrev"] and st["consecutive"] >= 3
-            closes_next = (
-                starting_new
-                and slot_idx < last_slot_idx
-                and channel not in open_by_slot[next_slot_idx]
-            )
-            starts_on_last_slot = starting_new and slot_idx == last_slot_idx
-            return (
-                # Avoid starting a fresh 30-minute stint on last slot unless necessary.
-                0 if not starts_on_last_slot else 1,
-                # Prefer starts that can continue into next slot (>= 1 hour).
-                0 if not closes_next else 1,
-                0 if not st["workedPrev"] else 1,
-                # Prefer giving rest after 1.5 hours when coverage allows.
-                0 if not prefers_rest_after_90 else 1,
-                st["totalWorked"],
-                st["consecutive"],
-                0 if same_channel else 1,
-                ctrl,
-            )
-
-        pending_channels = [channel for channel in open_channels if channel not in chosen]
-
-        def backtrack(channel_pos):
-            if channel_pos >= len(pending_channels):
-                return True
-
-            channel = pending_channels[channel_pos]
-            candidates = []
-            for ctrl in controllers:
-                if ctrl in used:
-                    continue
-
-                st = states[ctrl]
-                if not _allowed_to_work(st):
-                    continue
-
-                # Hard rule: controller cannot switch to a different position
-                # in consecutive duty slots without rest.
-                if st["workedPrev"] and st["prevChannel"] != channel:
-                    continue
-
-                candidates.append(ctrl)
-
-            candidates.sort(key=lambda ctrl: score(ctrl, channel))
-
-            for ctrl in candidates:
-                used.add(ctrl)
-                chosen[channel] = ctrl
-                if backtrack(channel_pos + 1):
-                    return True
-                used.remove(ctrl)
-                chosen.pop(channel, None)
-
-            return False
-
-        if not backtrack(0):
-            return {
-                "block": block_name,
-                "status": "infeasible",
-                "reason": f"No feasible assignment under rest/consecutive constraints at slot {slot_idx}",
-                "assignments": [],
-                "uncovered": [{"slot": slot_idx, "openChannels": open_channels}],
-            }
-
-        worked_this_slot = set(chosen.values())
-        for ctrl in controllers:
-            st = states[ctrl]
-            if ctrl in worked_this_slot:
-                assigned_channel = next(channel for channel, c in chosen.items() if c == ctrl)
-                if st["workedPrev"]:
-                    st["consecutive"] += 1
-                else:
-                    st["consecutive"] = 1
-                st["workedPrev"] = True
-                st["restSlots"] = 0
-                st["everWorked"] = True
-                st["totalWorked"] += 1
-                st["prevChannel"] = assigned_channel
-            else:
-                if st["workedPrev"] or st["everWorked"]:
-                    st["restSlots"] += 1
-                st["workedPrev"] = False
-                st["consecutive"] = 0
-                st["prevChannel"] = None
-
-        slot_assignments[slot_idx] = chosen
-
-    collapsed = []
     for ctrl in controllers:
-        run_channel = None
-        run_start = None
+        slot_work_vars = []
+        for slot_idx in range(slot_count):
+            slot_vars = []
+            for channel in open_by_slot[slot_idx]:
+                var = model.NewBoolVar(f"x_c{ctrl}_s{slot_idx}_ch{channel}")
+                x[(ctrl, slot_idx, channel)] = var
+                slot_vars.append(var)
 
-        for slot_idx in block_slots:
-            current_channel = None
-            for channel, assigned_ctrl in slot_assignments[slot_idx].items():
-                if assigned_ctrl == ctrl:
-                    current_channel = channel
-                    break
+            work_var = model.NewBoolVar(f"work_c{ctrl}_s{slot_idx}")
+            model.Add(work_var == sum(slot_vars))
+            work[(ctrl, slot_idx)] = work_var
+            slot_work_vars.append(work_var)
 
-            if current_channel == run_channel and current_channel is not None:
-                continue
+        work_totals[ctrl] = _sum_bool_vars(model, slot_work_vars, f"work_total_{ctrl}")
+        model.AddMaxEquality(used[ctrl], slot_work_vars)
 
-            if run_channel is not None:
-                collapsed.append(
-                    {
-                        "controller": ctrl,
-                        "channel": run_channel,
-                        "slotStart": run_start,
-                        "slotEnd": slot_idx,
-                    }
-                )
+        first_half_used[ctrl] = model.NewBoolVar(f"first_used_{ctrl}")
+        second_half_used[ctrl] = model.NewBoolVar(f"second_used_{ctrl}")
 
-            run_channel = current_channel
-            run_start = slot_idx if current_channel is not None else None
+        model.Add(first_half_used[ctrl] <= used[ctrl])
+        model.Add(first_half_used[ctrl] + half[ctrl] <= 1)
+        model.Add(first_half_used[ctrl] >= used[ctrl] - half[ctrl])
 
-        if run_channel is not None:
-            collapsed.append(
+        model.Add(second_half_used[ctrl] <= used[ctrl])
+        model.Add(second_half_used[ctrl] <= half[ctrl])
+        model.Add(second_half_used[ctrl] >= used[ctrl] + half[ctrl] - 1)
+
+        first_half_selected_work[ctrl] = model.NewIntVar(0, slot_count, f"first_work_{ctrl}")
+        model.Add(first_half_selected_work[ctrl] == work_totals[ctrl]).OnlyEnforceIf(first_half_used[ctrl])
+        model.Add(first_half_selected_work[ctrl] == 0).OnlyEnforceIf(first_half_used[ctrl].Not())
+
+        second_half_selected_work[ctrl] = model.NewIntVar(0, slot_count, f"second_work_{ctrl}")
+        model.Add(second_half_selected_work[ctrl] == work_totals[ctrl]).OnlyEnforceIf(second_half_used[ctrl])
+        model.Add(second_half_selected_work[ctrl] == 0).OnlyEnforceIf(second_half_used[ctrl].Not())
+
+        first_half_adjusted_work[ctrl] = model.NewIntVar(0, slot_count * 3, f"first_adj_work_{ctrl}")
+        model.Add(
+            first_half_adjusted_work[ctrl]
+            == work_totals[ctrl] + slot_count * half[ctrl] + slot_count * (1 - used[ctrl])
+        )
+
+        second_half_adjusted_work[ctrl] = model.NewIntVar(0, slot_count * 3, f"second_adj_work_{ctrl}")
+        model.Add(
+            second_half_adjusted_work[ctrl]
+            == work_totals[ctrl] + slot_count * (1 - half[ctrl]) + slot_count * (1 - used[ctrl])
+        )
+
+        for slot_idx in range(slot_count):
+            start_var = model.NewBoolVar(f"start_c{ctrl}_s{slot_idx}")
+            prev_work = work[(ctrl, slot_idx - 1)] if slot_idx > 0 else None
+            if prev_work is None:
+                model.Add(start_var == work[(ctrl, slot_idx)])
+            else:
+                model.Add(start_var >= work[(ctrl, slot_idx)] - prev_work)
+                model.Add(start_var <= work[(ctrl, slot_idx)])
+                model.Add(start_var <= 1 - prev_work)
+            run_starts[(ctrl, slot_idx)] = start_var
+
+        for slot_idx in range(slot_count):
+            singleton_var = model.NewBoolVar(f"singleton_c{ctrl}_s{slot_idx}")
+            prev_work = work[(ctrl, slot_idx - 1)] if slot_idx > 0 else None
+            next_work = work[(ctrl, slot_idx + 1)] if slot_idx < slot_count - 1 else None
+
+            terms = [work[(ctrl, slot_idx)]]
+            if prev_work is not None:
+                terms.append(prev_work.Not())
+            if next_work is not None:
+                terms.append(next_work.Not())
+            model.AddBoolAnd(terms).OnlyEnforceIf(singleton_var)
+
+            off_conditions = [work[(ctrl, slot_idx)].Not()]
+            if prev_work is not None:
+                off_conditions.append(prev_work)
+            if next_work is not None:
+                off_conditions.append(next_work)
+            model.AddBoolOr(off_conditions).OnlyEnforceIf(singleton_var.Not())
+            singleton_runs[(ctrl, slot_idx)] = singleton_var
+
+        for slot_idx in range(slot_count):
+            fourth_var = model.NewBoolVar(f"fourth_plus_c{ctrl}_s{slot_idx}")
+            if slot_idx < 3:
+                model.Add(fourth_var == 0)
+            else:
+                prev_chain = [
+                    work[(ctrl, slot_idx - 3)],
+                    work[(ctrl, slot_idx - 2)],
+                    work[(ctrl, slot_idx - 1)],
+                    work[(ctrl, slot_idx)],
+                ]
+                model.AddBoolAnd(prev_chain).OnlyEnforceIf(fourth_var)
+                model.AddBoolOr(
+                    [
+                        work[(ctrl, slot_idx - 3)].Not(),
+                        work[(ctrl, slot_idx - 2)].Not(),
+                        work[(ctrl, slot_idx - 1)].Not(),
+                        work[(ctrl, slot_idx)].Not(),
+                    ]
+                ).OnlyEnforceIf(fourth_var.Not())
+            fourth_plus_slots[(ctrl, slot_idx)] = fourth_var
+
+    for slot_idx, open_channels in enumerate(open_by_slot):
+        for channel in open_channels:
+            model.Add(sum(x[(ctrl, slot_idx, channel)] for ctrl in controllers) == 1)
+
+    for ctrl in controllers:
+        for slot_idx in second_half_only_slots:
+            model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf(half[ctrl].Not())
+
+        for slot_idx in first_half_only_slots:
+            model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf(half[ctrl])
+
+        model.Add(
+            sum(work[(ctrl, slot_idx)] for slot_idx in rest_slots) <= len(rest_slots) - 1
+        ).OnlyEnforceIf(half[ctrl].Not())
+
+        for start_idx in range(slot_count - MAX_CONSECUTIVE_SLOTS):
+            model.Add(
+                sum(work[(ctrl, start_idx + offset)] for offset in range(MAX_CONSECUTIVE_SLOTS + 1))
+                <= MAX_CONSECUTIVE_SLOTS
+            )
+
+        for slot_idx in range(slot_count - 1):
+            current_open = open_by_slot[slot_idx]
+            next_open = open_by_slot[slot_idx + 1]
+            for current_channel in current_open:
+                for next_channel in next_open:
+                    if current_channel != next_channel:
+                        model.Add(
+                            x[(ctrl, slot_idx, current_channel)] + x[(ctrl, slot_idx + 1, next_channel)] <= 1
+                        )
+
+    if requested_first_half is not None:
+        model.Add(sum(half[ctrl] for ctrl in controllers) == total_controllers - requested_first_half)
+    if requested_second_half is not None:
+        model.Add(sum(half[ctrl] for ctrl in controllers) == requested_second_half)
+    if require_all_used:
+        for ctrl in controllers:
+            model.Add(used[ctrl] == 1)
+
+    used_total = _sum_bool_vars(model, list(used.values()), "used_total")
+    first_used_total = _sum_bool_vars(model, list(first_half_used.values()), "first_used_total")
+    second_used_total = _sum_bool_vars(model, list(second_half_used.values()), "second_used_total")
+
+    max_work = model.NewIntVar(0, slot_count, "max_work")
+    model.AddMaxEquality(max_work, list(work_totals.values()))
+
+    split_gap = model.NewIntVar(0, total_controllers, "split_gap")
+    model.AddAbsEquality(split_gap, first_used_total - second_used_total)
+
+    used_adjusted_work = {}
+    for ctrl in controllers:
+        used_adjusted_work[ctrl] = model.NewIntVar(0, slot_count * 2, f"used_adj_work_{ctrl}")
+        model.Add(used_adjusted_work[ctrl] == work_totals[ctrl] + slot_count * (1 - used[ctrl]))
+
+    min_used_work = model.NewIntVar(0, slot_count * 2, "min_used_work")
+    model.AddMinEquality(min_used_work, list(used_adjusted_work.values()))
+    overall_work_gap = model.NewIntVar(0, slot_count, "overall_work_gap")
+    model.Add(overall_work_gap == max_work - min_used_work)
+
+    first_half_max_work = model.NewIntVar(0, slot_count, "first_half_max_work")
+    model.AddMaxEquality(first_half_max_work, list(first_half_selected_work.values()))
+    first_half_min_work = model.NewIntVar(0, slot_count * 3, "first_half_min_work")
+    model.AddMinEquality(first_half_min_work, list(first_half_adjusted_work.values()))
+    first_half_gap = model.NewIntVar(0, slot_count, "first_half_gap")
+    model.Add(first_half_gap == first_half_max_work - first_half_min_work)
+
+    second_half_max_work = model.NewIntVar(0, slot_count, "second_half_max_work")
+    model.AddMaxEquality(second_half_max_work, list(second_half_selected_work.values()))
+    second_half_min_work = model.NewIntVar(0, slot_count * 3, "second_half_min_work")
+    model.AddMinEquality(second_half_min_work, list(second_half_adjusted_work.values()))
+    second_half_gap = model.NewIntVar(0, slot_count, "second_half_gap")
+    model.Add(second_half_gap == second_half_max_work - second_half_min_work)
+
+    singleton_total = _sum_bool_vars(model, list(singleton_runs.values()), "singleton_total")
+    fourth_plus_total = _sum_bool_vars(model, list(fourth_plus_slots.values()), "fourth_plus_total")
+    run_start_total = _sum_bool_vars(model, list(run_starts.values()), "run_start_total")
+
+    # Prefer fewer controllers first, then smaller workload spread, then fewer fragmented duties.
+    model.Minimize(
+        used_total * OBJECTIVE_USED_CONTROLLER_WEIGHT
+        + (first_half_gap + second_half_gap) * OBJECTIVE_HALF_GAP_WEIGHT
+        + overall_work_gap * OBJECTIVE_OVERALL_GAP_WEIGHT
+        + fourth_plus_total * OBJECTIVE_FOURTH_SLOT_WEIGHT
+        + singleton_total * OBJECTIVE_SINGLETON_WEIGHT
+        + run_start_total * OBJECTIVE_RUN_START_WEIGHT
+        + max_work * OBJECTIVE_MAX_WORK_WEIGHT
+        + split_gap
+    )
+
+    return {
+        "model": model,
+        "x": x,
+        "work": work,
+        "half": half,
+        "used": used,
+        "workTotals": work_totals,
+        "firstHalfUsed": first_half_used,
+        "secondHalfUsed": second_half_used,
+        "runStarts": run_starts,
+        "singletonRuns": singleton_runs,
+        "fourthPlusSlots": fourth_plus_slots,
+    }
+
+
+def _solve_night_cp_sat(
+    total_controllers,
+    open_by_slot,
+    requested_first_half=None,
+    requested_second_half=None,
+    require_all_used=False,
+):
+    if total_controllers <= 0:
+        raise ValueError("Controller count must be positive")
+
+    model_data = _build_solver_model(
+        total_controllers,
+        open_by_slot,
+        requested_first_half=requested_first_half,
+        requested_second_half=requested_second_half,
+        require_all_used=require_all_used,
+    )
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = SOLVE_TIME_LIMIT_SECONDS
+    solver.parameters.random_seed = 0
+
+    status = solver.Solve(model_data["model"])
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        if status == cp_model.UNKNOWN:
+            reason = "Solver timed out before finding a feasible night schedule"
+        else:
+            reason = "No feasible night schedule found for the given controller counts and closures"
+        return {
+            "status": "infeasible",
+            "reason": reason,
+        }
+
+    raw_assignments = []
+    for (ctrl, slot_idx, channel), var in model_data["x"].items():
+        if solver.Value(var):
+            raw_assignments.append(
                 {
-                    "controller": ctrl,
-                    "channel": run_channel,
-                    "slotStart": run_start,
-                    "slotEnd": block_slots[-1] + 1,
+                    "controllerIndex": ctrl,
+                    "slot": slot_idx,
+                    "channel": channel,
                 }
             )
 
     return {
-        "block": block_name,
         "status": "ok",
-        "reason": "",
-        "assignments": collapsed,
-        "uncovered": [],
+        "assignments": raw_assignments,
+        "halfByController": {ctrl: solver.Value(model_data["half"][ctrl]) for ctrl in range(total_controllers)},
+        "usedByController": {ctrl: solver.Value(model_data["used"][ctrl]) for ctrl in range(total_controllers)},
+        "workTotals": {ctrl: solver.Value(model_data["workTotals"][ctrl]) for ctrl in range(total_controllers)},
     }
 
 
-def _workload_slots_from_assignments(assignments):
-    totals = defaultdict(int)
-    for item in assignments:
-        totals[item["controller"]] += item["slotEnd"] - item["slotStart"]
-    return totals
+def _choose_best_total_solution(total_controllers, open_by_slot):
+    lower_bounds = _minimum_required_lower_bounds(open_by_slot)
+    first_lower = lower_bounds["firstHalf"]
+    second_lower = lower_bounds["secondHalf"]
 
+    if total_controllers < first_lower + second_lower:
+        return {
+            "status": "infeasible",
+            "reason": (
+                f"No feasible night split for totalControllers={total_controllers}. "
+                f"Minimum required with current channel timings is {first_lower + second_lower} "
+                f"({first_lower} first-half + {second_lower} second-half)."
+            ),
+        }
 
-def _max_open_in_slots(block_slots, open_by_slot):
-    return max((len(open_by_slot[idx]) for idx in block_slots), default=0)
+    best = None
+    last_reason = "No feasible night schedule found for the given controller counts and closures"
 
-
-def _required_block1_controllers(block_slots, open_by_slot):
-    union_open = set()
-    for idx in block_slots:
-        union_open.update(open_by_slot[idx])
-    return len(union_open)
-
-
-def _schedule_half_with_count(prefix, controller_count, block1_name, block2_name, block_slots, open_by_slot):
-    controllers = _build_controller_ids(prefix, controller_count)
-    if not controllers:
-        return {"status": "infeasible", "controllers": controllers, "blocks": []}
-
-    best_ok = None
-    last_fail = None
-
-    # Try cyclic controller-order rotations and keep the most balanced result.
-    for shift in range(len(controllers)):
-        rotated = controllers[shift:] + controllers[:shift]
-        b1 = _schedule_block1(block1_name, block_slots[block1_name], open_by_slot, rotated)
-        if b1["status"] != "ok":
-            last_fail = {"status": "infeasible", "controllers": controllers, "blocks": [b1]}
-            continue
-
-        initial_totals = _workload_slots_from_assignments(b1["assignments"])
-        b2 = _schedule_block2(
-            block2_name,
-            block_slots[block2_name],
+    for first_count in range(first_lower, total_controllers - second_lower + 1):
+        second_count = total_controllers - first_count
+        attempt = _solve_night_cp_sat(
+            total_controllers,
             open_by_slot,
-            rotated,
-            initial_worked_slots=initial_totals,
+            requested_first_half=first_count,
+            requested_second_half=second_count,
+            require_all_used=True,
         )
-        if b2["status"] != "ok":
-            last_fail = {"status": "infeasible", "controllers": controllers, "blocks": [b1, b2]}
+        if attempt["status"] != "ok":
+            last_reason = attempt["reason"]
             continue
 
-        totals = defaultdict(int)
-        for k, v in initial_totals.items():
-            totals[k] += v
-        for k, v in _workload_slots_from_assignments(b2["assignments"]).items():
-            totals[k] += v
-        for ctrl in controllers:
-            totals.setdefault(ctrl, 0)
-
-        max_slots = max(totals.values()) if totals else 0
-        min_slots = min(totals.values()) if totals else 0
-        gap = max_slots - min_slots
-        fairness_key = (gap, max_slots, shift)
-
+        renamed = _rename_controllers(attempt, explicit_halves=False)
+        metrics = _spread_metrics(renamed)
+        used_total = len(renamed["controllerPools"]["firstHalf"]) + len(renamed["controllerPools"]["secondHalf"])
+        key = (
+            metrics["overallGap"],
+            metrics["halfInternalGap"],
+            metrics["overallMax"],
+            metrics["halfAverageGap"],
+            abs(first_count - second_count),
+            first_count,
+            used_total,
+        )
         candidate = {
             "status": "ok",
-            "controllers": controllers,
-            "blocks": [b1, b2],
-            "fairnessKey": fairness_key,
-            "gapSlots": gap,
+            "solution": attempt,
+            "renamed": renamed,
+            "selectedSplit": (first_count, second_count),
+            "key": key,
         }
-        if best_ok is None or candidate["fairnessKey"] < best_ok["fairnessKey"]:
-            best_ok = candidate
-
-    if best_ok is not None:
-        return {
-            "status": "ok",
-            "controllers": best_ok["controllers"],
-            "blocks": best_ok["blocks"],
-            "gapSlots": best_ok["gapSlots"],
-        }
-
-    return last_fail or {"status": "infeasible", "controllers": controllers, "blocks": []}
-
-
-def _find_minimum_feasible_half(prefix, available_count, block1_name, block2_name, block_slots, open_by_slot):
-    available = int(available_count)
-    if available < 0:
-        raise ValueError("Controller count cannot be negative")
-
-    lower_bound = max(
-        _required_block1_controllers(block_slots[block1_name], open_by_slot),
-        _max_open_in_slots(block_slots[block2_name], open_by_slot),
-    )
-
-    if available < lower_bound:
-        return {
-            "status": "infeasible",
-            "reason": f"Available controllers ({available}) below minimum required ({lower_bound})",
-            "result": None,
-            "minimumRequired": lower_bound,
-        }
-
-    min_feasible_count = None
-    best_attempt = None
-    best_key = None
-
-    for count in range(lower_bound, available + 1):
-        attempt = _schedule_half_with_count(
-            prefix,
-            count,
-            block1_name,
-            block2_name,
-            block_slots,
-            open_by_slot,
-        )
-        if attempt["status"] == "ok":
-            if min_feasible_count is None:
-                min_feasible_count = count
-            # Fairness-first optimization, then smaller controller count.
-            key = (attempt.get("gapSlots", 0), count)
-            if best_attempt is None or key < best_key:
-                best_attempt = attempt
-                best_key = key
-
-    if best_attempt is not None:
-        return {
-            "status": "ok",
-            "reason": "",
-            "result": best_attempt,
-            "minimumRequired": lower_bound,
-            "minimumFeasibleCount": min_feasible_count,
-            "selectedCount": len(best_attempt["controllers"]),
-            "selectedGapSlots": best_attempt.get("gapSlots", 0),
-        }
-
-    return {
-        "status": "infeasible",
-        "reason": f"No feasible schedule found up to available controllers ({available})",
-        "result": None,
-        "minimumRequired": lower_bound,
-        "minimumFeasibleCount": 0,
-        "selectedCount": 0,
-        "selectedGapSlots": 0,
-    }
-
-
-def _infeasible_half_result(reason):
-    return {
-        "status": "infeasible",
-        "reason": reason,
-        "result": None,
-        "minimumRequired": 0,
-        "minimumFeasibleCount": 0,
-        "selectedCount": 0,
-        "selectedGapSlots": 0,
-    }
-
-
-def _choose_best_split(total_controllers, block_slots, open_by_slot):
-    best = None
-    infeasible_reasons = []
-    first_half_lower_bound = max(
-        _required_block1_controllers(block_slots["first_half_block_1"], open_by_slot),
-        _max_open_in_slots(block_slots["first_half_block_2"], open_by_slot),
-    )
-    second_half_lower_bound = max(
-        _required_block1_controllers(block_slots["second_half_block_1"], open_by_slot),
-        _max_open_in_slots(block_slots["second_half_block_2"], open_by_slot),
-    )
-
-    minimum_total_required = first_half_lower_bound + second_half_lower_bound
-    if total_controllers < minimum_total_required:
-        reason = (
-            f"No feasible night split for totalControllers={total_controllers}. "
-            f"Minimum required with current channel timings is {minimum_total_required} "
-            f"({first_half_lower_bound} first-half + {second_half_lower_bound} second-half)."
-        )
-        return _infeasible_half_result(reason), _infeasible_half_result(reason), (0, 0)
-
-    # Only evaluate splits that can satisfy each half's lower bound.
-    for first_available in range(first_half_lower_bound, total_controllers - second_half_lower_bound + 1):
-        second_available = total_controllers - first_available
-
-        first_half = _find_minimum_feasible_half(
-            "f",
-            first_available,
-            "first_half_block_1",
-            "first_half_block_2",
-            block_slots,
-            open_by_slot,
-        )
-        second_half = _find_minimum_feasible_half(
-            "s",
-            second_available,
-            "second_half_block_1",
-            "second_half_block_2",
-            block_slots,
-            open_by_slot,
-        )
-
-        if first_half["status"] != "ok" or second_half["status"] != "ok":
-            if first_half["status"] != "ok":
-                infeasible_reasons.append(first_half["reason"])
-            if second_half["status"] != "ok":
-                infeasible_reasons.append(second_half["reason"])
-            continue
-
-        used_total = first_half["selectedCount"] + second_half["selectedCount"]
-        gap_key = max(first_half["selectedGapSlots"], second_half["selectedGapSlots"])
-        split_balance = abs(first_half["selectedCount"] - second_half["selectedCount"])
-
-        # Objective:
-        # 1) minimize used controllers
-        # 2) minimize workload gap
-        # 3) prefer balanced split
-        key = (used_total, gap_key, split_balance, first_available)
-        candidate = (key, first_half, second_half, first_available, second_available)
-        if best is None or candidate[0] < best[0]:
+        if best is None or candidate["key"] < best["key"]:
             best = candidate
 
     if best is None:
-        reason = infeasible_reasons[0] if infeasible_reasons else "No feasible first/second-half split for total controllers"
-        return _infeasible_half_result(reason), _infeasible_half_result(reason), (0, 0)
+        return {
+            "status": "infeasible",
+            "reason": last_reason,
+        }
 
-    _, first_half, second_half, first_available, second_available = best
-    return first_half, second_half, (first_available, second_available)
+    return best
+
+
+def _rename_controllers(solution, explicit_halves=False):
+    half_by_controller = solution["halfByController"]
+    used_by_controller = solution["usedByController"]
+
+    def include_controller(ctrl):
+        return explicit_halves or bool(used_by_controller[ctrl])
+
+    first_raw = [ctrl for ctrl in sorted(half_by_controller) if half_by_controller[ctrl] == 0 and include_controller(ctrl)]
+    second_raw = [ctrl for ctrl in sorted(half_by_controller) if half_by_controller[ctrl] == 1 and include_controller(ctrl)]
+
+    rename_map = {}
+    first_pool = []
+    second_pool = []
+
+    for idx, ctrl in enumerate(first_raw, start=1):
+        label = f"f{idx}"
+        rename_map[ctrl] = label
+        first_pool.append(label)
+
+    for idx, ctrl in enumerate(second_raw, start=1):
+        label = f"s{idx}"
+        rename_map[ctrl] = label
+        second_pool.append(label)
+
+    renamed_assignments = []
+    for item in solution["assignments"]:
+        controller_label = rename_map.get(item["controllerIndex"])
+        if controller_label is None:
+            continue
+        renamed_assignments.append(
+            {
+                "controller": controller_label,
+                "slot": item["slot"],
+                "channel": item["channel"],
+            }
+        )
+
+    workload_by_label = {}
+    for ctrl, label in rename_map.items():
+        workload_by_label[label] = solution["workTotals"].get(ctrl, 0)
+
+    return {
+        "assignments": renamed_assignments,
+        "controllerPools": {
+            "firstHalf": first_pool,
+            "secondHalf": second_pool,
+        },
+        "workloadByController": workload_by_label,
+    }
+
+
+def _collapse_block_assignments(assignments, block_slots):
+    slot_to_items = defaultdict(list)
+    for item in assignments:
+        if item["slot"] in block_slots:
+            slot_to_items[item["slot"]].append(item)
+
+    collapsed = []
+    controllers = sorted({item["controller"] for item in assignments})
+    ordered_block_slots = sorted(block_slots)
+
+    for controller in controllers:
+        current_channel = None
+        run_start = None
+        previous_slot = None
+
+        for slot_idx in ordered_block_slots:
+            slot_items = slot_to_items.get(slot_idx, [])
+            channel = None
+            for item in slot_items:
+                if item["controller"] == controller:
+                    channel = item["channel"]
+                    break
+
+            if channel is None:
+                if current_channel is not None:
+                    collapsed.append(
+                        {
+                            "controller": controller,
+                            "channel": current_channel,
+                            "slotStart": run_start,
+                            "slotEnd": previous_slot + 1,
+                        }
+                    )
+                    current_channel = None
+                    run_start = None
+                previous_slot = slot_idx
+                continue
+
+            if current_channel == channel and previous_slot is not None and slot_idx == previous_slot + 1:
+                previous_slot = slot_idx
+                continue
+
+            if current_channel is not None:
+                collapsed.append(
+                    {
+                        "controller": controller,
+                        "channel": current_channel,
+                        "slotStart": run_start,
+                        "slotEnd": previous_slot + 1,
+                    }
+                )
+
+            current_channel = channel
+            run_start = slot_idx
+            previous_slot = slot_idx
+
+        if current_channel is not None:
+            collapsed.append(
+                {
+                    "controller": controller,
+                    "channel": current_channel,
+                    "slotStart": run_start,
+                    "slotEnd": previous_slot + 1,
+                }
+            )
+
+    return collapsed
 
 
 def _assignments_to_time_ranges(assignments, edges):
@@ -624,93 +634,208 @@ def _uncovered_to_time_ranges(uncovered, edges):
     return result
 
 
+def _workload_gap_hours(pool, workload_by_controller):
+    if not pool:
+        return 0
+    slot_counts = [workload_by_controller.get(controller, 0) for controller in pool]
+    return ((max(slot_counts) - min(slot_counts)) * SLOT_MINUTES) / 60
+
+
+def _controller_hours(pool, workload_by_controller):
+    return [(workload_by_controller.get(controller, 0) * SLOT_MINUTES) / 60 for controller in pool]
+
+
+def _average(values):
+    return sum(values) / len(values) if values else 0
+
+
+def _spread_metrics(renamed):
+    first_hours = _controller_hours(renamed["controllerPools"]["firstHalf"], renamed["workloadByController"])
+    second_hours = _controller_hours(renamed["controllerPools"]["secondHalf"], renamed["workloadByController"])
+    all_hours = first_hours + second_hours
+
+    if not all_hours:
+        return {
+            "overallGap": 0,
+            "overallMax": 0,
+            "halfAverageGap": 0,
+            "halfInternalGap": 0,
+        }
+
+    return {
+        "overallGap": max(all_hours) - min(all_hours),
+        "overallMax": max(all_hours),
+        "halfAverageGap": abs(_average(first_hours) - _average(second_hours)),
+        "halfInternalGap": max(
+            (max(first_hours) - min(first_hours)) if first_hours else 0,
+            (max(second_hours) - min(second_hours)) if second_hours else 0,
+        ),
+    }
+
+
+def _minimum_required_lower_bounds(open_by_slot):
+    return {
+        "firstHalf": max((len(open_by_slot[idx]) for idx in _window_slots(FIRST_HALF_ONLY_WINDOW)), default=0),
+        "secondHalf": max((len(open_by_slot[idx]) for idx in _window_slots(SECOND_HALF_ONLY_WINDOW)), default=0),
+    }
+
+
+def _block_results_from_assignments(assignments):
+    block_results = []
+    for block_name, (start_mins, end_mins) in BLOCKS.items():
+        block_slots = _slot_range_to_indexes(start_mins, end_mins)
+        block_results.append(
+            {
+                "block": block_name,
+                "status": "ok",
+                "reason": "",
+                "assignments": _collapse_block_assignments(assignments, block_slots),
+                "uncovered": [],
+            }
+        )
+    return block_results
+
+
+def _infeasible_result(reason, closures, edges):
+    closures_echo = []
+    for channel in POSITIONS:
+        for close_from, close_to in closures.get(channel, []):
+            closures_echo.append(
+                {
+                    "channel": channel,
+                    "closeFrom": _fmt_night(close_from),
+                    "closeTo": _fmt_night(close_to),
+                }
+            )
+
+    block_results = []
+    for block_name in BLOCKS:
+        block_results.append(
+            {
+                "block": block_name,
+                "status": "infeasible",
+                "reason": reason,
+                "assignments": [],
+                "uncovered": [],
+            }
+        )
+
+    return {
+        "status": "infeasible",
+        "edges": edges,
+        "controllerPools": {
+            "firstHalf": [],
+            "secondHalf": [],
+        },
+        "optimization": {
+            "selectionMode": "unresolved",
+            "requestedControllers": {
+                "firstHalf": 0,
+                "secondHalf": 0,
+            },
+            "requestedTotalControllers": 0,
+            "selectedSplitAvailable": {
+                "firstHalf": 0,
+                "secondHalf": 0,
+            },
+            "minimumRequiredLowerBound": {
+                "firstHalf": 0,
+                "secondHalf": 0,
+            },
+            "minimumFeasibleControllers": {
+                "firstHalf": 0,
+                "secondHalf": 0,
+            },
+            "optimizedControllersUsed": {
+                "firstHalf": 0,
+                "secondHalf": 0,
+            },
+            "workloadGapHours": {
+                "firstHalf": 0,
+                "secondHalf": 0,
+            },
+        },
+        "closuresEcho": closures_echo,
+        "blockResults": block_results,
+    }
+
+
 def _run_night_schedule(payload):
     total_controllers_raw = payload.get("totalControllers")
-    first_half_controllers = payload.get("firstHalfControllers", 0)
-    second_half_controllers = payload.get("secondHalfControllers", 0)
+    first_half_controllers = payload.get("firstHalfControllers")
+    second_half_controllers = payload.get("secondHalfControllers")
     channel_closures = payload.get("channelClosures", [])
 
     closures = _normalize_closures(channel_closures)
     edges, open_by_slot = _build_open_channels_by_slot(closures)
+    lower_bounds = _minimum_required_lower_bounds(open_by_slot)
 
-    block_slots = {
-        name: _slot_range_to_indexes(start, end)
-        for name, (start, end) in BLOCKS.items()
-    }
-
-    selected_split = (int(first_half_controllers), int(second_half_controllers))
     if total_controllers_raw is not None:
         total_controllers = int(total_controllers_raw)
         if total_controllers < 15 or total_controllers > 17:
             raise ValueError("Total night controllers must be between 15 and 17")
 
-        first_half, second_half, selected_split = _choose_best_split(total_controllers, block_slots, open_by_slot)
-        first_half_controllers = selected_split[0]
-        second_half_controllers = selected_split[1]
+        chosen = _choose_best_total_solution(total_controllers, open_by_slot)
+        if chosen["status"] != "ok":
+            result = _infeasible_result(chosen["reason"], closures, edges)
+            result["optimization"]["selectionMode"] = "totalControllers"
+            result["optimization"]["requestedTotalControllers"] = total_controllers
+            result["optimization"]["minimumRequiredLowerBound"] = lower_bounds
+            return result
+
+        solution = chosen["solution"]
+        renamed = chosen["renamed"]
+        first_pool = renamed["controllerPools"]["firstHalf"]
+        second_pool = renamed["controllerPools"]["secondHalf"]
+        selected_split = chosen["selectedSplit"]
+        requested_counts = {
+            "firstHalf": selected_split[0],
+            "secondHalf": selected_split[1],
+        }
+        minimum_feasible = {
+            "firstHalf": len(first_pool),
+            "secondHalf": len(second_pool),
+        }
     else:
-        first_half = _find_minimum_feasible_half(
-            "f",
-            first_half_controllers,
-            "first_half_block_1",
-            "first_half_block_2",
-            block_slots,
+        first_count = int(first_half_controllers or 0)
+        second_count = int(second_half_controllers or 0)
+        total_controllers = first_count + second_count
+        if total_controllers <= 0:
+            raise ValueError("Provide either totalControllers or both half controller counts")
+
+        solution = _solve_night_cp_sat(
+            total_controllers,
             open_by_slot,
+            requested_first_half=first_count,
+            requested_second_half=second_count,
+            require_all_used=True,
         )
-        second_half = _find_minimum_feasible_half(
-            "s",
-            second_half_controllers,
-            "second_half_block_1",
-            "second_half_block_2",
-            block_slots,
-            open_by_slot,
-        )
+        if solution["status"] != "ok":
+            result = _infeasible_result(solution["reason"], closures, edges)
+            result["optimization"]["selectionMode"] = "halfControllers"
+            result["optimization"]["requestedControllers"] = {
+                "firstHalf": first_count,
+                "secondHalf": second_count,
+            }
+            result["optimization"]["requestedTotalControllers"] = total_controllers
+            result["optimization"]["selectedSplitAvailable"] = {
+                "firstHalf": first_count,
+                "secondHalf": second_count,
+            }
+            result["optimization"]["minimumRequiredLowerBound"] = lower_bounds
+            return result
 
-    block_results = []
-    if first_half["status"] == "ok":
-        block_results.extend(first_half["result"]["blocks"])
-    else:
-        block_results.extend(
-            [
-                {
-                    "block": "first_half_block_1",
-                    "status": "infeasible",
-                    "reason": first_half["reason"],
-                    "assignments": [],
-                    "uncovered": [],
-                },
-                {
-                    "block": "first_half_block_2",
-                    "status": "infeasible",
-                    "reason": first_half["reason"],
-                    "assignments": [],
-                    "uncovered": [],
-                },
-            ]
-        )
+        renamed = _rename_controllers(solution, explicit_halves=True)
+        first_pool = renamed["controllerPools"]["firstHalf"]
+        second_pool = renamed["controllerPools"]["secondHalf"]
+        selected_split = (len(first_pool), len(second_pool))
+        requested_counts = {
+            "firstHalf": first_count,
+            "secondHalf": second_count,
+        }
+        minimum_feasible = requested_counts.copy()
 
-    if second_half["status"] == "ok":
-        block_results.extend(second_half["result"]["blocks"])
-    else:
-        block_results.extend(
-            [
-                {
-                    "block": "second_half_block_1",
-                    "status": "infeasible",
-                    "reason": second_half["reason"],
-                    "assignments": [],
-                    "uncovered": [],
-                },
-                {
-                    "block": "second_half_block_2",
-                    "status": "infeasible",
-                    "reason": second_half["reason"],
-                    "assignments": [],
-                    "uncovered": [],
-                },
-            ]
-        )
-
-    status = "ok" if all(item["status"] == "ok" for item in block_results) else "infeasible"
+    block_results = _block_results_from_assignments(renamed["assignments"])
 
     closures_echo = []
     for channel in POSITIONS:
@@ -724,38 +849,29 @@ def _run_night_schedule(payload):
             )
 
     return {
-        "status": status,
+        "status": "ok",
         "edges": edges,
         "controllerPools": {
-            "firstHalf": first_half["result"]["controllers"] if first_half["status"] == "ok" else [],
-            "secondHalf": second_half["result"]["controllers"] if second_half["status"] == "ok" else [],
+            "firstHalf": first_pool,
+            "secondHalf": second_pool,
         },
         "optimization": {
             "selectionMode": "totalControllers" if total_controllers_raw is not None else "halfControllers",
-            "requestedControllers": {
-                "firstHalf": int(first_half_controllers),
-                "secondHalf": int(second_half_controllers),
-            },
-            "requestedTotalControllers": int(total_controllers_raw) if total_controllers_raw is not None else int(first_half_controllers) + int(second_half_controllers),
+            "requestedControllers": requested_counts,
+            "requestedTotalControllers": int(total_controllers),
             "selectedSplitAvailable": {
                 "firstHalf": selected_split[0],
                 "secondHalf": selected_split[1],
             },
-            "minimumRequiredLowerBound": {
-                "firstHalf": first_half["minimumRequired"],
-                "secondHalf": second_half["minimumRequired"],
-            },
-            "minimumFeasibleControllers": {
-                "firstHalf": first_half.get("minimumFeasibleCount", 0),
-                "secondHalf": second_half.get("minimumFeasibleCount", 0),
-            },
+            "minimumRequiredLowerBound": lower_bounds,
+            "minimumFeasibleControllers": minimum_feasible,
             "optimizedControllersUsed": {
-                "firstHalf": len(first_half["result"]["controllers"]) if first_half["status"] == "ok" else 0,
-                "secondHalf": len(second_half["result"]["controllers"]) if second_half["status"] == "ok" else 0,
+                "firstHalf": len(first_pool),
+                "secondHalf": len(second_pool),
             },
             "workloadGapHours": {
-                "firstHalf": (first_half.get("selectedGapSlots", 0) * SLOT_MINUTES) / 60,
-                "secondHalf": (second_half.get("selectedGapSlots", 0) * SLOT_MINUTES) / 60,
+                "firstHalf": _workload_gap_hours(first_pool, renamed["workloadByController"]),
+                "secondHalf": _workload_gap_hours(second_pool, renamed["workloadByController"]),
             },
         },
         "closuresEcho": closures_echo,
@@ -816,5 +932,12 @@ def build_night_schedule_for_pdf(payload):
 
     for controller in controller_order:
         schedule[controller].sort(key=lambda item: item[1])
+        merged = []
+        for position, start, end in schedule[controller]:
+            if merged and merged[-1][0] == position and merged[-1][2] == start:
+                merged[-1] = (position, merged[-1][1], end)
+            else:
+                merged.append((position, start, end))
+        schedule[controller] = merged
 
     return schedule, controller_order, NIGHT_START, NIGHT_END

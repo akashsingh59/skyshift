@@ -2,7 +2,7 @@ import { useState } from "react";
 import ShiftCard from "./ShiftCard";
 
 function nightControllerLogic() {
-  return [16, 17];
+  return [15, 16, 17];
 }
 
 const channelLabels = {
@@ -206,6 +206,7 @@ export default function NightShift({ onGenerate }) {
       showOpenPositions={false}
       onGenerate={handleNightGenerate}
       afterControllers={nightAfterControllers}
+      defaultControllers={16}
     />
   );
 }

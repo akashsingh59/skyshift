@@ -5,7 +5,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from engine.utils import mins_to_hhmm
+from engine.utils import format_duration, mins_to_hhmm
 
 DEFAULT_POSITION_ORDER = [
     "TWR-M",
@@ -65,13 +65,14 @@ def _build_controller_rows(schedule, slot_order):
     for controller in slot_order:
         blocks = sorted(schedule.get(controller, []), key=lambda block: block[1])
         if not blocks:
-            rows.append((controller, [("NO ASSIGNMENT", "", "")]))
+            rows.append((controller, "0h 0m", [("NO ASSIGNMENT", "", "")]))
             continue
+        total_minutes = sum(end - start for _, start, end in blocks)
         summary = [
             (position, mins_to_hhmm(start), mins_to_hhmm(end))
             for position, start, end in blocks
         ]
-        rows.append((controller, summary))
+        rows.append((controller, format_duration(total_minutes), summary))
     return rows
 
 
@@ -215,10 +216,11 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
     section_title_gap = 4 * mm
     row_h = 9.5 * mm
     ctrl_w = 26 * mm
+    total_w = 28 * mm
     pos_w = 70 * mm
-    from_w = 32 * mm
-    to_w = 32 * mm
-    table_w = ctrl_w + pos_w + from_w + to_w
+    from_w = 27 * mm
+    to_w = 27 * mm
+    table_w = ctrl_w + total_w + pos_w + from_w + to_w
     if table_w > width:
         pos_w -= (table_w - width)
         table_w = width
@@ -233,23 +235,25 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
         pdf.setFillColor(ink)
         pdf.setFont("Courier-Bold", 12)
         pdf.drawString(x + 1.8 * mm, table_top - 6.2 * mm, "CTRL")
-        pdf.drawString(x + ctrl_w + 1.8 * mm, table_top - 6.2 * mm, "POSITION")
-        pdf.drawString(x + ctrl_w + pos_w + 1.8 * mm, table_top - 6.2 * mm, "FROM")
-        pdf.drawString(x + ctrl_w + pos_w + from_w + 1.8 * mm, table_top - 6.2 * mm, "TO")
+        pdf.drawString(x + ctrl_w + 1.8 * mm, table_top - 6.2 * mm, "TOTAL")
+        pdf.drawString(x + ctrl_w + total_w + 1.8 * mm, table_top - 6.2 * mm, "POSITION")
+        pdf.drawString(x + ctrl_w + total_w + pos_w + 1.8 * mm, table_top - 6.2 * mm, "FROM")
+        pdf.drawString(x + ctrl_w + total_w + pos_w + from_w + 1.8 * mm, table_top - 6.2 * mm, "TO")
 
         pdf.setStrokeColor(ink)
         pdf.setLineWidth(1.1)
         pdf.rect(x, table_top - row_h, table_w, row_h, fill=0, stroke=1)
         pdf.line(x + ctrl_w, table_top, x + ctrl_w, table_top - row_h)
-        pdf.line(x + ctrl_w + pos_w, table_top, x + ctrl_w + pos_w, table_top - row_h)
-        pdf.line(x + ctrl_w + pos_w + from_w, table_top, x + ctrl_w + pos_w + from_w, table_top - row_h)
+        pdf.line(x + ctrl_w + total_w, table_top, x + ctrl_w + total_w, table_top - row_h)
+        pdf.line(x + ctrl_w + total_w + pos_w, table_top, x + ctrl_w + total_w + pos_w, table_top - row_h)
+        pdf.line(x + ctrl_w + total_w + pos_w + from_w, table_top, x + ctrl_w + total_w + pos_w + from_w, table_top - row_h)
         return table_top - row_h
 
     section_y = y_top
     draw_section_header(section_y)
     y_cursor = draw_table_header(section_y - section_title_gap)
 
-    for controller, assignments in rows:
+    for controller, total_text, assignments in rows:
         group_rows = max(1, len(assignments))
         group_h = group_rows * row_h
 
@@ -264,26 +268,29 @@ def _draw_controller_assignments(pdf, x, y_top, width, schedule, slot_order, pag
         pdf.setLineWidth(1.0)
         pdf.rect(x, y_cursor - group_h, table_w, group_h, fill=0, stroke=1)
         pdf.line(x + ctrl_w, y_cursor, x + ctrl_w, y_cursor - group_h)
-        pdf.line(x + ctrl_w + pos_w, y_cursor, x + ctrl_w + pos_w, y_cursor - group_h)
-        pdf.line(x + ctrl_w + pos_w + from_w, y_cursor, x + ctrl_w + pos_w + from_w, y_cursor - group_h)
+        pdf.line(x + ctrl_w + total_w, y_cursor, x + ctrl_w + total_w, y_cursor - group_h)
+        pdf.line(x + ctrl_w + total_w + pos_w, y_cursor, x + ctrl_w + total_w + pos_w, y_cursor - group_h)
+        pdf.line(x + ctrl_w + total_w + pos_w + from_w, y_cursor, x + ctrl_w + total_w + pos_w + from_w, y_cursor - group_h)
 
         pdf.setFillColor(ink)
         pdf.setFont("Courier-Bold", 13)
         ctrl_text_y = y_cursor - (group_h / 2) - 1.6 * mm
         pdf.drawCentredString(x + (ctrl_w / 2), ctrl_text_y, controller)
+        pdf.setFont("Courier-Bold", 11)
+        pdf.drawCentredString(x + ctrl_w + (total_w / 2), ctrl_text_y, total_text)
 
         row_cursor = y_cursor
         for index, (position, start_text, end_text) in enumerate(assignments):
             pdf.setFont("Courier-Bold", 12)
-            pdf.drawString(x + ctrl_w + 1.8 * mm, row_cursor - 6.2 * mm, position)
-            pdf.drawString(x + ctrl_w + pos_w + 1.8 * mm, row_cursor - 6.2 * mm, start_text)
-            pdf.drawString(x + ctrl_w + pos_w + from_w + 1.8 * mm, row_cursor - 6.2 * mm, end_text)
+            pdf.drawString(x + ctrl_w + total_w + 1.8 * mm, row_cursor - 6.2 * mm, position)
+            pdf.drawString(x + ctrl_w + total_w + pos_w + 1.8 * mm, row_cursor - 6.2 * mm, start_text)
+            pdf.drawString(x + ctrl_w + total_w + pos_w + from_w + 1.8 * mm, row_cursor - 6.2 * mm, end_text)
 
             row_cursor -= row_h
             if index < len(assignments) - 1:
                 _draw_dashed_rule(
                     pdf,
-                    x + ctrl_w,
+                    x + ctrl_w + total_w,
                     row_cursor,
                     x + table_w,
                     row_cursor,
