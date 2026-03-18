@@ -106,6 +106,7 @@ export default function App() {
           {error && <p className="error">{error}</p>}
         </div>
       )}
+      <p>contact 9870576022 for suggestions</p>
     </div>
   );
 }
