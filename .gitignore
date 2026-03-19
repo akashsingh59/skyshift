@@ -1,5 +1,6 @@
 backend/venv/
 backend/.venv/
+backend/skyshift_analytics.db
 **/__pycache__/
 *.pyc
 

@@ -5,7 +5,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from engine.utils import format_duration, mins_to_hhmm
+from backend.engine.utils import format_duration, mins_to_hhmm
 
 DEFAULT_POSITION_ORDER = [
     "TWR-M",

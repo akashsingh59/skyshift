@@ -2,7 +2,8 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import router
+from backend.analytics import init_analytics_db
+from backend.api.routes import router
 
 app = FastAPI(title="SkyShift Roster API")
 
@@ -21,6 +22,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
    
+init_analytics_db()
+
 app.include_router(router)
 
 @app.get("/")
