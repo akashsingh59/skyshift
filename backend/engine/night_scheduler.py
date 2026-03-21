@@ -166,15 +166,26 @@ def _build_solver_model(
     second_half_selected_work = {}
     first_half_adjusted_work = {}
     second_half_adjusted_work = {}
+    tower_mn_used = {}
+    tower_s_used = {}
+
+    tower_mn_channels = {1, 2}
+    tower_s_channels = {6, 8}
 
     for ctrl in controllers:
         slot_work_vars = []
+        tower_mn_slot_vars = []
+        tower_s_slot_vars = []
         for slot_idx in range(slot_count):
             slot_vars = []
             for channel in open_by_slot[slot_idx]:
                 var = model.NewBoolVar(f"x_c{ctrl}_s{slot_idx}_ch{channel}")
                 x[(ctrl, slot_idx, channel)] = var
                 slot_vars.append(var)
+                if channel in tower_mn_channels:
+                    tower_mn_slot_vars.append(var)
+                if channel in tower_s_channels:
+                    tower_s_slot_vars.append(var)
 
             work_var = model.NewBoolVar(f"work_c{ctrl}_s{slot_idx}")
             model.Add(work_var == sum(slot_vars))
@@ -183,6 +194,20 @@ def _build_solver_model(
 
         work_totals[ctrl] = _sum_bool_vars(model, slot_work_vars, f"work_total_{ctrl}")
         model.AddMaxEquality(used[ctrl], slot_work_vars)
+
+        tower_mn_used[ctrl] = model.NewBoolVar(f"tower_mn_used_{ctrl}")
+        if tower_mn_slot_vars:
+            model.AddMaxEquality(tower_mn_used[ctrl], tower_mn_slot_vars)
+        else:
+            model.Add(tower_mn_used[ctrl] == 0)
+
+        tower_s_used[ctrl] = model.NewBoolVar(f"tower_s_used_{ctrl}")
+        if tower_s_slot_vars:
+            model.AddMaxEquality(tower_s_used[ctrl], tower_s_slot_vars)
+        else:
+            model.Add(tower_s_used[ctrl] == 0)
+
+        model.Add(tower_mn_used[ctrl] + tower_s_used[ctrl] <= 1)
 
         first_half_used[ctrl] = model.NewBoolVar(f"first_used_{ctrl}")
         second_half_used[ctrl] = model.NewBoolVar(f"second_used_{ctrl}")
@@ -326,6 +351,7 @@ def _build_solver_model(
     model.AddMinEquality(min_used_work, list(used_adjusted_work.values()))
     overall_work_gap = model.NewIntVar(0, slot_count, "overall_work_gap")
     model.Add(overall_work_gap == max_work - min_used_work)
+    model.Add(overall_work_gap <= 1)
 
     first_half_max_work = model.NewIntVar(0, slot_count, "first_half_max_work")
     model.AddMaxEquality(first_half_max_work, list(first_half_selected_work.values()))
