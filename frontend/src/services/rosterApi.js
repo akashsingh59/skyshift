@@ -14,9 +14,5 @@ export async function generateRoster(payload) {
 
   const blob = await response.blob();
   const url = window.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `roster_${payload.shift}.pdf`;
-  link.click();
-  window.URL.revokeObjectURL(url);
+  window.location.assign(url);
 }
