@@ -14,5 +14,5 @@ export async function generateRoster(payload) {
 
   const blob = await response.blob();
   const url = window.URL.createObjectURL(blob);
-  window.location.assign(url);
+  window.open(url, "_blank", "noopener,noreferrer");
 }
