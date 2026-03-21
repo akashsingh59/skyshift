@@ -1,4 +1,5 @@
 from .templates import generate_2_3_grid, generate_3_5_grid, generate_1_2_grid
+from .optimizer import solve_4_7_block
 from .utils import round5
 
 class BlockGenerator:
@@ -13,6 +14,14 @@ class BlockGenerator:
     def generate(self, pattern_type):
 
         count = len(self.controllers)
+
+        if pattern_type == "4:7":
+            return solve_4_7_block(
+                self.controllers,
+                self.positions,
+                self.start,
+                self.end,
+            )
 
         if pattern_type == "2:3":
             half_slot = round5(self.total / (3 * count))
