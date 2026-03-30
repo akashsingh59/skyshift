@@ -95,26 +95,17 @@ def get_last_24h_download_summary():
             (since.isoformat(),),
         ).fetchall()
 
-    counts_by_hour = {row["hour_bucket_utc"]: row["downloads"] for row in hour_rows}
-    hourly = []
-    cursor = since.replace(minute=0, second=0)
-    end = now.replace(minute=0, second=0)
-
-    while cursor <= end:
-        bucket = cursor.strftime("%Y-%m-%dT%H:00:00Z")
-        hourly.append(
-            {
-                "hourStartUtc": bucket,
-                "downloads": counts_by_hour.get(bucket, 0),
-            }
-        )
-        cursor += timedelta(hours=1)
-
     return {
         "windowStartUtc": since.isoformat().replace("+00:00", "Z"),
         "windowEndUtc": now.isoformat().replace("+00:00", "Z"),
         "totalDownloads": int(total_row["total"]) if total_row else 0,
-        "downloadsByHour": hourly,
+        "downloadsByHour": [
+            {
+                "hourStartUtc": row["hour_bucket_utc"],
+                "downloads": row["downloads"],
+            }
+            for row in hour_rows
+        ],
         "downloadsByShift": [
             {
                 "shift": row["shift"],

@@ -2,15 +2,13 @@ def get_layout(p,n):
     if p==7:
         if n==12:
             return [
+                {"pattern":"4:7","size":7, "pos": 4},
                 {"pattern":"3:5","size":5, "pos": 3},
-                {"pattern":"3:5","size":5, "pos": 3},
-                {"pattern":"1:2","size":2, "pos": 1},
+                
             ]
         elif n==13:
             return [
-                {"pattern":"2:3","size":3,"pos":2},
-                {"pattern":"1:2","size":2,"pos":1},
-                {"pattern":"1:2","size":2,"pos":1},
+                {"pattern":"4:7","size":7,"pos":4},
                 {"pattern":"1:2","size":2,"pos":1},
                 {"pattern":"1:2","size":2,"pos":1},
                 {"pattern":"1:2","size":2,"pos":1},
