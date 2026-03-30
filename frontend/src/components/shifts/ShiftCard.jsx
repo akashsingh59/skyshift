@@ -18,17 +18,12 @@ export default function ShiftCard({
       ? defaultControllers
       : (controllerOptions[0] ?? 12);
   const [controllers, setControllers] = useState(initialControllers);
-  const defaultContributoryChannel = 1;
 
   useEffect(() => {
     if (!controllerOptions.includes(controllers)) {
       setControllers(controllerOptions[0] ?? 12);
     }
   }, [controllerOptions, controllers]);
-
-  const needsChannel =
-    (openPositions === 7 && controllers === 13) ||
-    (openPositions === 8 && controllers === 14);
 
   function handleGenerate() {
     onGenerate({
@@ -37,7 +32,6 @@ export default function ShiftCard({
       endTime,
       openPositions,
       totalControllers: controllers,
-      contributoryChannel: needsChannel ? defaultContributoryChannel : null,
     });
   }
 
