@@ -74,23 +74,23 @@ def get_positions(p,n):
 ]
         elif n ==12 :
              return [
-    "TWR-M",
-    "SMC-N",
-    "CLD-1",
-    "TWR-N",
-    "TWR-S2",
-    "SMC-M",
-    "SMC-S",
+    "CLD-1(4:7)",
+    "SMC-N(4:7)",
+    "TWR-N(4:7)",
+    "TWR-M(4:7)",
+    "TWR-S2(3:5)",
+    "SMC-M(3:5)",
+    "SMC-S(3:5)",
 ]
         elif n == 13:
              return [
-    "TWR-N",
-    "SMC-M",
-    "TWR-M",
-    "SMC-S",
-    "TWR-S2",
-    "CLD-1",
-    "SMC-N",
+    "TWR-N(4:7)",
+    "SMC-M(4:7)",
+    "TWR-M(4:7)",
+    "SMC-S(4:7)",
+    "TWR-S2(1:2)",
+    "CLD-1(1:2)",
+    "SMC-N(1:2)",
 ]
         
 
