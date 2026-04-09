@@ -23,7 +23,8 @@ BLOCKS = {
 REST_WINDOW = (15 * 60, 18 * 60)
 FIRST_HALF_ONLY_WINDOW = BLOCKS["first_half_block_2"]
 SECOND_HALF_ONLY_WINDOW = BLOCKS["second_half_block_2"]
-SOLVE_TIME_LIMIT_SECONDS = 10
+FEASIBILITY_TIME_LIMIT_SECONDS = 30
+OPTIMIZATION_TIME_LIMIT_SECONDS = 60
 OBJECTIVE_USED_CONTROLLER_WEIGHT = 100000
 OBJECTIVE_HALF_GAP_WEIGHT = 5000
 OBJECTIVE_OVERALL_GAP_WEIGHT = 3000
@@ -31,6 +32,7 @@ OBJECTIVE_FOURTH_SLOT_WEIGHT = 600
 OBJECTIVE_SINGLETON_WEIGHT = 200
 OBJECTIVE_RUN_START_WEIGHT = 25
 OBJECTIVE_MAX_WORK_WEIGHT = 10
+MAX_OVERALL_WORK_GAP_SLOTS = 2
 
 TIME_RE = re.compile(r"^(\d{2}):(\d{2})$")
 
@@ -141,6 +143,8 @@ def _build_solver_model(
     requested_first_half=None,
     requested_second_half=None,
     require_all_used=False,
+    apply_objective=True,
+    enforce_balance_constraints=True,
 ):
     _ensure_ortools_available()
 
@@ -342,46 +346,52 @@ def _build_solver_model(
     split_gap = model.NewIntVar(0, total_controllers, "split_gap")
     model.AddAbsEquality(split_gap, first_used_total - second_used_total)
 
-    used_adjusted_work = {}
-    for ctrl in controllers:
-        used_adjusted_work[ctrl] = model.NewIntVar(0, slot_count * 2, f"used_adj_work_{ctrl}")
-        model.Add(used_adjusted_work[ctrl] == work_totals[ctrl] + slot_count * (1 - used[ctrl]))
+    if enforce_balance_constraints:
+        used_adjusted_work = {}
+        for ctrl in controllers:
+            used_adjusted_work[ctrl] = model.NewIntVar(0, slot_count * 2, f"used_adj_work_{ctrl}")
+            model.Add(used_adjusted_work[ctrl] == work_totals[ctrl] + slot_count * (1 - used[ctrl]))
 
-    min_used_work = model.NewIntVar(0, slot_count * 2, "min_used_work")
-    model.AddMinEquality(min_used_work, list(used_adjusted_work.values()))
-    overall_work_gap = model.NewIntVar(0, slot_count, "overall_work_gap")
-    model.Add(overall_work_gap == max_work - min_used_work)
-    model.Add(overall_work_gap <= 1)
+        min_used_work = model.NewIntVar(0, slot_count * 2, "min_used_work")
+        model.AddMinEquality(min_used_work, list(used_adjusted_work.values()))
+        overall_work_gap = model.NewIntVar(0, slot_count, "overall_work_gap")
+        model.Add(overall_work_gap == max_work - min_used_work)
+        model.Add(overall_work_gap <= MAX_OVERALL_WORK_GAP_SLOTS)
 
-    first_half_max_work = model.NewIntVar(0, slot_count, "first_half_max_work")
-    model.AddMaxEquality(first_half_max_work, list(first_half_selected_work.values()))
-    first_half_min_work = model.NewIntVar(0, slot_count * 3, "first_half_min_work")
-    model.AddMinEquality(first_half_min_work, list(first_half_adjusted_work.values()))
-    first_half_gap = model.NewIntVar(0, slot_count, "first_half_gap")
-    model.Add(first_half_gap == first_half_max_work - first_half_min_work)
+        first_half_max_work = model.NewIntVar(0, slot_count, "first_half_max_work")
+        model.AddMaxEquality(first_half_max_work, list(first_half_selected_work.values()))
+        first_half_min_work = model.NewIntVar(0, slot_count * 3, "first_half_min_work")
+        model.AddMinEquality(first_half_min_work, list(first_half_adjusted_work.values()))
+        first_half_gap = model.NewIntVar(0, slot_count, "first_half_gap")
+        model.Add(first_half_gap == first_half_max_work - first_half_min_work)
 
-    second_half_max_work = model.NewIntVar(0, slot_count, "second_half_max_work")
-    model.AddMaxEquality(second_half_max_work, list(second_half_selected_work.values()))
-    second_half_min_work = model.NewIntVar(0, slot_count * 3, "second_half_min_work")
-    model.AddMinEquality(second_half_min_work, list(second_half_adjusted_work.values()))
-    second_half_gap = model.NewIntVar(0, slot_count, "second_half_gap")
-    model.Add(second_half_gap == second_half_max_work - second_half_min_work)
+        second_half_max_work = model.NewIntVar(0, slot_count, "second_half_max_work")
+        model.AddMaxEquality(second_half_max_work, list(second_half_selected_work.values()))
+        second_half_min_work = model.NewIntVar(0, slot_count * 3, "second_half_min_work")
+        model.AddMinEquality(second_half_min_work, list(second_half_adjusted_work.values()))
+        second_half_gap = model.NewIntVar(0, slot_count, "second_half_gap")
+        model.Add(second_half_gap == second_half_max_work - second_half_min_work)
+    else:
+        overall_work_gap = 0
+        first_half_gap = 0
+        second_half_gap = 0
 
     singleton_total = _sum_bool_vars(model, list(singleton_runs.values()), "singleton_total")
     fourth_plus_total = _sum_bool_vars(model, list(fourth_plus_slots.values()), "fourth_plus_total")
     run_start_total = _sum_bool_vars(model, list(run_starts.values()), "run_start_total")
 
-    # Prefer fewer controllers first, then smaller workload spread, then fewer fragmented duties.
-    model.Minimize(
-        used_total * OBJECTIVE_USED_CONTROLLER_WEIGHT
-        + (first_half_gap + second_half_gap) * OBJECTIVE_HALF_GAP_WEIGHT
-        + overall_work_gap * OBJECTIVE_OVERALL_GAP_WEIGHT
-        + fourth_plus_total * OBJECTIVE_FOURTH_SLOT_WEIGHT
-        + singleton_total * OBJECTIVE_SINGLETON_WEIGHT
-        + run_start_total * OBJECTIVE_RUN_START_WEIGHT
-        + max_work * OBJECTIVE_MAX_WORK_WEIGHT
-        + split_gap
-    )
+    if apply_objective:
+        # Prefer fewer controllers first, then smaller workload spread, then fewer fragmented duties.
+        model.Minimize(
+            used_total * OBJECTIVE_USED_CONTROLLER_WEIGHT
+            + (first_half_gap + second_half_gap) * OBJECTIVE_HALF_GAP_WEIGHT
+            + overall_work_gap * OBJECTIVE_OVERALL_GAP_WEIGHT
+            + fourth_plus_total * OBJECTIVE_FOURTH_SLOT_WEIGHT
+            + singleton_total * OBJECTIVE_SINGLETON_WEIGHT
+            + run_start_total * OBJECTIVE_RUN_START_WEIGHT
+            + max_work * OBJECTIVE_MAX_WORK_WEIGHT
+            + split_gap
+        )
 
     return {
         "model": model,
@@ -408,20 +418,48 @@ def _solve_night_cp_sat(
     if total_controllers <= 0:
         raise ValueError("Controller count must be positive")
 
-    model_data = _build_solver_model(
-        total_controllers,
-        open_by_slot,
-        requested_first_half=requested_first_half,
-        requested_second_half=requested_second_half,
-        require_all_used=require_all_used,
-    )
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = SOLVE_TIME_LIMIT_SECONDS
-    solver.parameters.random_seed = 0
+    def solve_model(*, apply_objective, time_limit_seconds):
+        model_data = _build_solver_model(
+            total_controllers,
+            open_by_slot,
+            requested_first_half=requested_first_half,
+            requested_second_half=requested_second_half,
+            require_all_used=require_all_used,
+            apply_objective=apply_objective,
+            enforce_balance_constraints=apply_objective,
+        )
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = time_limit_seconds
+        solver.parameters.random_seed = 0
+        status = solver.Solve(model_data["model"])
+        return model_data, solver, status
 
-    status = solver.Solve(model_data["model"])
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        if status == cp_model.UNKNOWN:
+    def format_solution(model_data, solver):
+        raw_assignments = []
+        for (ctrl, slot_idx, channel), var in model_data["x"].items():
+            if solver.Value(var):
+                raw_assignments.append(
+                    {
+                        "controllerIndex": ctrl,
+                        "slot": slot_idx,
+                        "channel": channel,
+                    }
+                )
+
+        return {
+            "status": "ok",
+            "assignments": raw_assignments,
+            "halfByController": {ctrl: solver.Value(model_data["half"][ctrl]) for ctrl in range(total_controllers)},
+            "usedByController": {ctrl: solver.Value(model_data["used"][ctrl]) for ctrl in range(total_controllers)},
+            "workTotals": {ctrl: solver.Value(model_data["workTotals"][ctrl]) for ctrl in range(total_controllers)},
+        }
+
+    feasibility_model, feasibility_solver, feasibility_status = solve_model(
+        apply_objective=False,
+        time_limit_seconds=FEASIBILITY_TIME_LIMIT_SECONDS,
+    )
+    if feasibility_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        if feasibility_status == cp_model.UNKNOWN:
             reason = "Solver timed out before finding a feasible night schedule"
         else:
             reason = "No feasible night schedule found for the given controller counts and closures"
@@ -430,24 +468,16 @@ def _solve_night_cp_sat(
             "reason": reason,
         }
 
-    raw_assignments = []
-    for (ctrl, slot_idx, channel), var in model_data["x"].items():
-        if solver.Value(var):
-            raw_assignments.append(
-                {
-                    "controllerIndex": ctrl,
-                    "slot": slot_idx,
-                    "channel": channel,
-                }
-            )
+    optimized_model, optimized_solver, optimized_status = solve_model(
+        apply_objective=True,
+        time_limit_seconds=OPTIMIZATION_TIME_LIMIT_SECONDS,
+    )
+    if optimized_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return format_solution(optimized_model, optimized_solver)
 
-    return {
-        "status": "ok",
-        "assignments": raw_assignments,
-        "halfByController": {ctrl: solver.Value(model_data["half"][ctrl]) for ctrl in range(total_controllers)},
-        "usedByController": {ctrl: solver.Value(model_data["used"][ctrl]) for ctrl in range(total_controllers)},
-        "workTotals": {ctrl: solver.Value(model_data["workTotals"][ctrl]) for ctrl in range(total_controllers)},
-    }
+    # Optimization timing out should not discard a valid feasible roster.
+    return format_solution(feasibility_model, feasibility_solver)
+
 
 
 def _choose_best_total_solution(total_controllers, open_by_slot):
