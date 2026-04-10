@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from math import ceil
 
 from .constants import NIGHT_POSITION_LABELS, POSITIONS
 
@@ -25,6 +26,7 @@ FIRST_HALF_ONLY_WINDOW = BLOCKS["first_half_block_2"]
 SECOND_HALF_ONLY_WINDOW = BLOCKS["second_half_block_2"]
 FEASIBILITY_TIME_LIMIT_SECONDS = 30
 OPTIMIZATION_TIME_LIMIT_SECONDS = 60
+MAX_TOTAL_SPLIT_CANDIDATES_TO_EVALUATE = 3
 OBJECTIVE_USED_CONTROLLER_WEIGHT = 100000
 OBJECTIVE_HALF_GAP_WEIGHT = 5000
 OBJECTIVE_OVERALL_GAP_WEIGHT = 3000
@@ -32,7 +34,11 @@ OBJECTIVE_FOURTH_SLOT_WEIGHT = 600
 OBJECTIVE_SINGLETON_WEIGHT = 200
 OBJECTIVE_RUN_START_WEIGHT = 25
 OBJECTIVE_MAX_WORK_WEIGHT = 10
+OBJECTIVE_BRIDGE_REWARD_WEIGHT = 50
 MAX_OVERALL_WORK_GAP_SLOTS = 2
+MAX_BRIDGE_CONTROLLERS = 2
+MAX_BRIDGE_WORK_SLOTS = 11
+BRIDGE_EXTRA_SLOTS_OVER_AVERAGE = 2
 
 TIME_RE = re.compile(r"^(\d{2}):(\d{2})$")
 
@@ -131,6 +137,20 @@ def _window_slots(window):
     return _slot_range_to_indexes(window[0], window[1])
 
 
+def _transition_slots():
+    first_half_slots = _window_slots(FIRST_HALF_ONLY_WINDOW)
+    second_half_slots = _window_slots(SECOND_HALF_ONLY_WINDOW)
+    if not first_half_slots or not second_half_slots:
+        return []
+
+    last_first_slot = first_half_slots[-1]
+    first_second_slot = second_half_slots[0]
+    if first_second_slot != last_first_slot + 1:
+        return []
+
+    return [last_first_slot]
+
+
 def _sum_bool_vars(model, vars_list, name):
     total = model.NewIntVar(0, len(vars_list), name)
     model.Add(total == sum(vars_list))
@@ -154,10 +174,15 @@ def _build_solver_model(
 
     first_half_only_slots = _window_slots(FIRST_HALF_ONLY_WINDOW)
     second_half_only_slots = _window_slots(SECOND_HALF_ONLY_WINDOW)
+    transition_slots = _transition_slots()
+    total_required_work = sum(len(open_channels) for open_channels in open_by_slot)
+    average_work_slots = ceil(total_required_work / total_controllers) if total_controllers else 0
+    max_bridge_work_slots = min(average_work_slots + BRIDGE_EXTRA_SLOTS_OVER_AVERAGE, MAX_BRIDGE_WORK_SLOTS)
 
     x = {}
     work = {}
     half = {ctrl: model.NewBoolVar(f"half_{ctrl}") for ctrl in controllers}
+    bridge = {ctrl: model.NewBoolVar(f"bridge_{ctrl}") for ctrl in controllers}
     used = {ctrl: model.NewBoolVar(f"used_{ctrl}") for ctrl in controllers}
     work_totals = {}
     first_half_used = {}
@@ -302,10 +327,16 @@ def _build_solver_model(
 
     for ctrl in controllers:
         for slot_idx in second_half_only_slots:
-            model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf(half[ctrl].Not())
+            model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf([half[ctrl].Not(), bridge[ctrl].Not()])
 
         for slot_idx in first_half_only_slots:
-            model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf(half[ctrl])
+            model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf([half[ctrl], bridge[ctrl].Not()])
+
+        model.Add(bridge[ctrl] <= used[ctrl])
+        model.Add(work_totals[ctrl] <= max_bridge_work_slots).OnlyEnforceIf(bridge[ctrl])
+
+        for boundary_slot in transition_slots:
+            model.Add(work[(ctrl, boundary_slot)] + work[(ctrl, boundary_slot + 1)] <= 1).OnlyEnforceIf(bridge[ctrl])
 
         for start_idx in range(slot_count - MAX_CONSECUTIVE_SLOTS):
             model.Add(
@@ -330,6 +361,9 @@ def _build_solver_model(
     if require_all_used:
         for ctrl in controllers:
             model.Add(used[ctrl] == 1)
+
+    bridge_total = _sum_bool_vars(model, list(bridge.values()), "bridge_total")
+    model.Add(bridge_total <= MAX_BRIDGE_CONTROLLERS)
 
     used_total = _sum_bool_vars(model, list(used.values()), "used_total")
     first_used_total = _sum_bool_vars(model, list(first_half_used.values()), "first_used_total")
@@ -386,6 +420,7 @@ def _build_solver_model(
             + run_start_total * OBJECTIVE_RUN_START_WEIGHT
             + max_work * OBJECTIVE_MAX_WORK_WEIGHT
             + split_gap
+            - bridge_total * OBJECTIVE_BRIDGE_REWARD_WEIGHT
         )
 
     return {
@@ -393,6 +428,7 @@ def _build_solver_model(
         "x": x,
         "work": work,
         "half": half,
+        "bridge": bridge,
         "used": used,
         "workTotals": work_totals,
         "firstHalfUsed": first_half_used,
@@ -445,6 +481,7 @@ def _solve_night_cp_sat(
             "status": "ok",
             "assignments": raw_assignments,
             "halfByController": {ctrl: solver.Value(model_data["half"][ctrl]) for ctrl in range(total_controllers)},
+            "bridgeByController": {ctrl: solver.Value(model_data["bridge"][ctrl]) for ctrl in range(total_controllers)},
             "usedByController": {ctrl: solver.Value(model_data["used"][ctrl]) for ctrl in range(total_controllers)},
             "workTotals": {ctrl: solver.Value(model_data["workTotals"][ctrl]) for ctrl in range(total_controllers)},
         }
@@ -479,21 +516,31 @@ def _choose_best_total_solution(total_controllers, open_by_slot):
     lower_bounds = _minimum_required_lower_bounds(open_by_slot)
     first_lower = lower_bounds["firstHalf"]
     second_lower = lower_bounds["secondHalf"]
+    minimum_total = max(first_lower, second_lower, first_lower + second_lower - MAX_BRIDGE_CONTROLLERS)
 
-    if total_controllers < first_lower + second_lower:
+    if total_controllers < minimum_total:
         return {
             "status": "infeasible",
             "reason": (
                 f"No feasible night split for totalControllers={total_controllers}. "
-                f"Minimum required with current channel timings is {first_lower + second_lower} "
-                f"({first_lower} first-half + {second_lower} second-half)."
+                f"Minimum required with current channel timings is {minimum_total} "
+                f"({first_lower} first-half + {second_lower} second-half, with up to {MAX_BRIDGE_CONTROLLERS} bridge controllers)."
             ),
         }
 
     best = None
     last_reason = "No feasible night schedule found for the given controller counts and closures"
+    min_first_count = max(0, first_lower - MAX_BRIDGE_CONTROLLERS)
+    max_first_count = min(total_controllers, total_controllers - second_lower + MAX_BRIDGE_CONTROLLERS)
 
-    for first_count in range(first_lower, total_controllers - second_lower + 1):
+    midpoint = total_controllers / 2
+    candidate_first_counts = sorted(
+        range(min_first_count, max_first_count + 1),
+        key=lambda first_count: (abs(first_count - midpoint), first_count),
+    )
+    candidate_first_counts = candidate_first_counts[:MAX_TOTAL_SPLIT_CANDIDATES_TO_EVALUATE]
+
+    for first_count in candidate_first_counts:
         second_count = total_controllers - first_count
         attempt = _solve_night_cp_sat(
             total_controllers,
