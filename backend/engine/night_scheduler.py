@@ -152,7 +152,6 @@ def _build_solver_model(
     slot_count = len(open_by_slot)
     controllers = list(range(total_controllers))
 
-    rest_slots = _window_slots(REST_WINDOW)
     first_half_only_slots = _window_slots(FIRST_HALF_ONLY_WINDOW)
     second_half_only_slots = _window_slots(SECOND_HALF_ONLY_WINDOW)
 
@@ -307,10 +306,6 @@ def _build_solver_model(
 
         for slot_idx in first_half_only_slots:
             model.Add(work[(ctrl, slot_idx)] == 0).OnlyEnforceIf(half[ctrl])
-
-        model.Add(
-            sum(work[(ctrl, slot_idx)] for slot_idx in rest_slots) <= len(rest_slots) - 1
-        ).OnlyEnforceIf(half[ctrl].Not())
 
         for start_idx in range(slot_count - MAX_CONSECUTIVE_SLOTS):
             model.Add(
