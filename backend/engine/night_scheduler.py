@@ -27,6 +27,8 @@ SECOND_HALF_ONLY_WINDOW = BLOCKS["second_half_block_2"]
 FEASIBILITY_TIME_LIMIT_SECONDS = 30
 OPTIMIZATION_TIME_LIMIT_SECONDS = 60
 MAX_TOTAL_SPLIT_CANDIDATES_TO_EVALUATE = 3
+TARGET_WORK_HOURS = 5
+TARGET_WORK_SLOTS = (TARGET_WORK_HOURS * 60) // SLOT_MINUTES
 OBJECTIVE_USED_CONTROLLER_WEIGHT = 100000
 OBJECTIVE_HALF_GAP_WEIGHT = 5000
 OBJECTIVE_OVERALL_GAP_WEIGHT = 3000
@@ -35,6 +37,7 @@ OBJECTIVE_SINGLETON_WEIGHT = 200
 OBJECTIVE_RUN_START_WEIGHT = 25
 OBJECTIVE_MAX_WORK_WEIGHT = 10
 OBJECTIVE_BRIDGE_REWARD_WEIGHT = 50
+OBJECTIVE_TARGET_WORK_WEIGHT = 150
 MAX_OVERALL_WORK_GAP_SLOTS = 2
 MAX_BRIDGE_CONTROLLERS = 2
 MAX_BRIDGE_WORK_SLOTS = 11
@@ -157,6 +160,12 @@ def _sum_bool_vars(model, vars_list, name):
     return total
 
 
+def _sum_int_vars(model, vars_list, upper_bound, name):
+    total = model.NewIntVar(0, upper_bound, name)
+    model.Add(total == sum(vars_list))
+    return total
+
+
 def _build_solver_model(
     total_controllers,
     open_by_slot,
@@ -194,6 +203,7 @@ def _build_solver_model(
     second_half_selected_work = {}
     first_half_adjusted_work = {}
     second_half_adjusted_work = {}
+    target_work_deviation = {}
     tower_mn_used = {}
     tower_s_used = {}
 
@@ -267,6 +277,10 @@ def _build_solver_model(
             second_half_adjusted_work[ctrl]
             == work_totals[ctrl] + slot_count * (1 - half[ctrl]) + slot_count * (1 - used[ctrl])
         )
+
+        target_work_deviation[ctrl] = model.NewIntVar(0, slot_count, f"target_work_deviation_{ctrl}")
+        model.AddAbsEquality(target_work_deviation[ctrl], work_totals[ctrl] - TARGET_WORK_SLOTS)
+        model.Add(target_work_deviation[ctrl] == 0).OnlyEnforceIf(used[ctrl].Not())
 
         for slot_idx in range(slot_count):
             start_var = model.NewBoolVar(f"start_c{ctrl}_s{slot_idx}")
@@ -408,11 +422,18 @@ def _build_solver_model(
     singleton_total = _sum_bool_vars(model, list(singleton_runs.values()), "singleton_total")
     fourth_plus_total = _sum_bool_vars(model, list(fourth_plus_slots.values()), "fourth_plus_total")
     run_start_total = _sum_bool_vars(model, list(run_starts.values()), "run_start_total")
+    target_work_total = _sum_int_vars(
+        model,
+        list(target_work_deviation.values()),
+        slot_count * len(target_work_deviation),
+        "target_work_total",
+    )
 
     if apply_objective:
-        # Prefer fewer controllers first, then smaller workload spread, then fewer fragmented duties.
+        # Prefer fewer controllers first, then workloads near the 5-hour target, then smaller spread and less fragmentation.
         model.Minimize(
             used_total * OBJECTIVE_USED_CONTROLLER_WEIGHT
+            + target_work_total * OBJECTIVE_TARGET_WORK_WEIGHT
             + (first_half_gap + second_half_gap) * OBJECTIVE_HALF_GAP_WEIGHT
             + overall_work_gap * OBJECTIVE_OVERALL_GAP_WEIGHT
             + fourth_plus_total * OBJECTIVE_FOURTH_SLOT_WEIGHT
@@ -547,7 +568,7 @@ def _choose_best_total_solution(total_controllers, open_by_slot):
             open_by_slot,
             requested_first_half=first_count,
             requested_second_half=second_count,
-            require_all_used=True,
+            require_all_used=False,
         )
         if attempt["status"] != "ok":
             last_reason = attempt["reason"]
@@ -870,8 +891,8 @@ def _run_night_schedule(payload):
 
     if total_controllers_raw is not None:
         total_controllers = int(total_controllers_raw)
-        if total_controllers < 15 or total_controllers > 17:
-            raise ValueError("Total night controllers must be between 15 and 17")
+        if total_controllers < 14 or total_controllers > 18:
+            raise ValueError("Total night controllers must be between 14 and 18")
 
         chosen = _choose_best_total_solution(total_controllers, open_by_slot)
         if chosen["status"] != "ok":

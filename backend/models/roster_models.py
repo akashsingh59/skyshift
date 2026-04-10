@@ -10,7 +10,7 @@ class TimeWindow(BaseModel):
 
 class BaseRosterRequest(TimeWindow):
     shift: Literal["morning", "afternoon", "night"]
-    totalControllers: int = Field(..., ge=11, le=17)
+    totalControllers: int = Field(..., ge=11, le=18)
 
 
 class DayRosterRequest(BaseRosterRequest):
@@ -54,9 +54,9 @@ class NightRosterRequest(BaseRosterRequest):
     def validate_night_rules(self):
 
         # Controller rule
-        if self.totalControllers not in {15, 16, 17}:
+        if self.totalControllers not in {14, 15, 16, 17, 18}:
             raise ValueError(
-                "Night shift totalControllers must be one of 15, 16, 17"
+                "Night shift totalControllers must be one of 14, 15, 16, 17, 18"
             )
 
         # Ensure no duplicate channels
